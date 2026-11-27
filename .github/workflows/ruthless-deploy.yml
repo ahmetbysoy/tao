@@ -73,14 +73,20 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Setup Node.js 20 for Vercel CLI
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
       - name: Trigger Render Worker Deploy Hook
         env:
           RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
         run: |
           if [ -n "$RENDER_DEPLOY_HOOK_URL" ]; then
             echo "[RENDER] Triggering Frankfurt worker deployment..."
-            curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL"
-            echo "[RENDER] Deploy hook accepted (200 OK)."
+            RESPONSE=$(curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL")
+            echo "[RENDER] Deploy hook accepted (200 OK): $RESPONSE"
           else
             echo "[RENDER] RENDER_DEPLOY_HOOK_URL secret not configured yet. Connect Render blueprint (render.yaml) and add secret to enable auto-trigger."
           fi
@@ -94,11 +100,18 @@ jobs:
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         run: |
           if [ -n "$VERCEL_TOKEN" ]; then
-            echo "[VERCEL] Deploying Dopamine UI to production..."
+            echo "[VERCEL] Installing dependencies and deploying Dopamine UI to production..."
+            npm ci
             npx --yes vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+            if [ -n "$VITE_SUPABASE_URL" ] && [ -n "$VITE_SUPABASE_ANON_KEY" ]; then
+              printf 'VITE_SUPABASE_URL=%s\nVITE_SUPABASE_ANON_KEY=%s\n' \
+                "$VITE_SUPABASE_URL" "$VITE_SUPABASE_ANON_KEY" > .env.production
+            fi
             npx --yes vercel build --prod --token="$VERCEL_TOKEN"
-            npx --yes vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
-            echo "[VERCEL] Production deployment live (200 OK)."
+            LIVE_URL=$(npx --yes vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN" | tail -n 1)
+            echo "[VERCEL] Production deployment live: $LIVE_URL"
+            STATUS=$(curl -sSL -o /dev/null -w "%{http_code}" "$LIVE_URL")
+            echo "[VERCEL] Live URL health HTTP $STATUS"
           else
             echo "[VERCEL] VERCEL_TOKEN secret not configured yet. Import repo in Vercel (vercel.json ready) and add VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID secrets."
           fi
