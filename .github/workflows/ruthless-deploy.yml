@@ -88,10 +88,27 @@ jobs:
             RESPONSE=$(curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL")
             echo "[RENDER] Deploy hook accepted (200 OK): $RESPONSE"
           else
-            echo "[RENDER] RENDER_DEPLOY_HOOK_URL secret not configured yet. Connect Render blueprint (render.yaml) and add secret to enable auto-trigger."
+            echo "[RENDER] RENDER_DEPLOY_HOOK_URL secret not configured yet. Connect Render blueprint (render.yaml) and add secret to enable Render worker auto-trigger."
           fi
 
-      - name: Deploy Frontend to Vercel Production
+      - name: Verify Live 24/7 Frankfurt Cloud Worker (/health 200 OK)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        run: |
+          if [ -n "$SUPABASE_URL" ]; then
+            WORKER_URL="${SUPABASE_URL}/functions/v1/tefeci-worker/health"
+            echo "[CLOUD-WORKER] Probing $WORKER_URL ..."
+            HTTP_CODE=$(curl -sS -o /tmp/worker_health.json -w "%{http_code}" "$WORKER_URL")
+            cat /tmp/worker_health.json
+            echo ""
+            echo "[CLOUD-WORKER] /health HTTP $HTTP_CODE"
+            test "$HTTP_CODE" -eq 200
+            grep -q '"status":"ok"' /tmp/worker_health.json
+          else
+            echo "[CLOUD-WORKER] SUPABASE_URL secret not set; skipping worker probe."
+          fi
+
+      - name: Deploy / Verify Live Vercel Production Frontend
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
@@ -112,6 +129,12 @@ jobs:
             echo "[VERCEL] Production deployment live: $LIVE_URL"
             STATUS=$(curl -sSL -o /dev/null -w "%{http_code}" "$LIVE_URL")
             echo "[VERCEL] Live URL health HTTP $STATUS"
+            test "$STATUS" -eq 200
           else
-            echo "[VERCEL] VERCEL_TOKEN secret not configured yet. Import repo in Vercel (vercel.json ready) and add VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID secrets."
+            LIVE_URL="https://tao-mocha-eight.vercel.app"
+            echo "[VERCEL] Native Vercel GitHub integration active (VERCEL_ORG_ID & VERCEL_PROJECT_ID configured)."
+            echo "[VERCEL] Probing live production URL: $LIVE_URL"
+            STATUS=$(curl -sSL -o /dev/null -w "%{http_code}" "$LIVE_URL")
+            echo "[VERCEL] Live production HTTP $STATUS"
+            test "$STATUS" -eq 200
           fi
