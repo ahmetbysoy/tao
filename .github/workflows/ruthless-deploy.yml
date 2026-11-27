@@ -45,13 +45,19 @@ jobs:
         run: npm run build
 
       - name: Verify Live Supabase Health
-        if: ${{ secrets.VITE_SUPABASE_URL != '' && secrets.VITE_SUPABASE_ANON_KEY != '' }}
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         run: |
-          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" \
-            "${{ secrets.VITE_SUPABASE_URL }}/rest/v1/traders?select=id,nickname,mood" \
-            -H "apikey: ${{ secrets.VITE_SUPABASE_ANON_KEY }}")
-          echo "[SUPABASE] Live REST health HTTP $STATUS"
-          test "$STATUS" -eq 200
+          if [ -n "$VITE_SUPABASE_URL" ] && [ -n "$VITE_SUPABASE_ANON_KEY" ]; then
+            STATUS=$(curl -sS -o /dev/null -w "%{http_code}" \
+              "${VITE_SUPABASE_URL}/rest/v1/traders?select=id,nickname,mood" \
+              -H "apikey: ${VITE_SUPABASE_ANON_KEY}")
+            echo "[SUPABASE] Live REST health HTTP $STATUS"
+            test "$STATUS" -eq 200
+          else
+            echo "[SUPABASE] Secrets not set; skipping live health probe."
+          fi
 
       - name: Upload Frontend Build Artifact
         uses: actions/upload-artifact@v4
