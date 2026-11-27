@@ -1,0 +1,33 @@
+@keyframes neonProfitGlow {
+  0%, 100% {
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.35), inset 0 0 8px rgba(16, 185, 129, 0.15);
+  }
+  50% {
+    box-shadow: 0 0 28px rgba(16, 185, 129, 0.7), inset 0 0 14px rgba(16, 185, 129, 0.3);
+  }
+}
+
+@keyframes bloodLossJitter {
+  0%, 100% {
+    transform: translate(0, 0);
+    box-shadow: 0 0 14px rgba(220, 38, 38, 0.45);
+  }
+  25% {
+    transform: translate(-1px, 1px);
+  }
+  50% {
+    transform: translate(1px, -1px);
+    box-shadow: 0 0 28px rgba(220, 38, 38, 0.85);
+  }
+  75% {
+    transform: translate(-1px, -1px);
+  }
+}
+
+.pnl-profit {
+  animation: neonProfitGlow 1.4s ease-in-out infinite;
+}
+
+.pnl-loss {
+  animation: bloodLossJitter 0.25s linear infinite;
+}
