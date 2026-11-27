@@ -20,7 +20,6 @@ type FeedFilter = "ALL" | "TRADES" | "COLLECTIONS" | "LIQUIDATION";
 function eventStyle(type: string) {
   switch (type) {
     case "WHALE_ALERT":
-    case "SIMULATE_WHALE":
       return {
         icon: Skull,
         badge: "bg-red-600 text-white border-amber-400 animate-pulse",
@@ -77,7 +76,7 @@ export const NotificationFeed: React.FC<NotificationFeedProps> = ({ events }) =>
     return sorted.filter((ev) => {
       if (filter === "ALL") return true;
       if (filter === "LIQUIDATION") {
-        return ev.type === "LIQUIDATION" || ev.type === "WHALE_ALERT" || ev.type === "SIMULATE_WHALE";
+        return ev.type === "LIQUIDATION" || ev.type === "WHALE_ALERT";
       }
       if (filter === "TRADES") {
         return ["OPEN_POSITION", "CLOSE_POSITION", "FORCE_CLOSE", "TRIGGER_TEST_TRADE"].includes(

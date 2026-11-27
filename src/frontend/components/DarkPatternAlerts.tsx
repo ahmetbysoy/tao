@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { AlertTriangle, Banknote, Flame, ShieldAlert, Skull } from "lucide-react";
+import { hapticLong, hapticMedium } from "../utils/haptics";
 import { speakAs, TraderVoiceId } from "../utils/tts";
 import { playCashRegister, playEnforcerKnock, playWarningAlarm } from "../utils/sfx";
 
@@ -147,10 +148,12 @@ export const DarkPatternAlerts: React.FC<DarkPatternAlertsProps> = ({
                   </div>
                 </div>
 
-                {/* Tactical Action Buttons */}
-                <div className="flex flex-wrap gap-1.5">
+                {/* Tactical Action Buttons (>= 44px touch targets) */}
+                <div className="grid w-full grid-cols-3 gap-1.5 sm:flex sm:w-auto sm:flex-wrap">
                   <button
+                    type="button"
                     onClick={() => {
+                      hapticLong();
                       playWarningAlarm();
                       speakAs(
                         debt.traderId,
@@ -158,7 +161,7 @@ export const DarkPatternAlerts: React.FC<DarkPatternAlertsProps> = ({
                       );
                       onDoubleInterest(debt);
                     }}
-                    className={`cursor-pointer rounded-lg border px-3 py-1.5 text-[11px] font-black tracking-wider text-white uppercase shadow-sm transition active:scale-95 ${
+                    className={`min-h-[44px] cursor-pointer rounded-xl border px-2.5 text-[11px] font-black tracking-wider text-white uppercase shadow-sm transition active:scale-95 ${
                       whalePanicActive
                         ? "whale-panic-btn border-amber-300 bg-gradient-to-r from-red-600 via-rose-600 to-red-600 hover:brightness-110"
                         : "border-red-500/70 bg-red-600/90 hover:bg-red-500"
@@ -168,7 +171,9 @@ export const DarkPatternAlerts: React.FC<DarkPatternAlertsProps> = ({
                   </button>
 
                   <button
+                    type="button"
                     onClick={() => {
+                      hapticMedium();
                       playEnforcerKnock();
                       speakAs(
                         "tefeci",
@@ -176,14 +181,16 @@ export const DarkPatternAlerts: React.FC<DarkPatternAlertsProps> = ({
                       );
                       onSendEnforcer(debt);
                     }}
-                    className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-fuchsia-500/50 bg-fuchsia-950/60 px-2.5 py-1.5 text-[11px] font-bold text-fuchsia-200 uppercase transition hover:bg-fuchsia-900/60 active:scale-95"
+                    className="inline-flex min-h-[44px] cursor-pointer items-center justify-center gap-1 rounded-xl border border-fuchsia-500/50 bg-fuchsia-950/60 px-2.5 text-[11px] font-bold text-fuchsia-200 uppercase transition hover:bg-fuchsia-900/60 active:scale-95"
                   >
                     <ShieldAlert className="h-3.5 w-3.5" />
                     Çırak
                   </button>
 
                   <button
+                    type="button"
                     onClick={() => {
+                      hapticMedium();
                       playCashRegister();
                       speakAs("tefeci", `${debt.nickname}'den tahsilatı yaptım. Kasa büyür.`);
                       onCollectDebt(debt);
@@ -194,7 +201,7 @@ export const DarkPatternAlerts: React.FC<DarkPatternAlertsProps> = ({
                         ? `Kasasından (Bakiye $${debt.traderBalance.toFixed(0)}) anlık tahsilat yap`
                         : "Trader bakiyesi tahsilat için yetersiz"
                     }
-                    className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-emerald-500/50 bg-emerald-950/60 px-2.5 py-1.5 text-[11px] font-bold text-emerald-200 uppercase transition hover:bg-emerald-900/60 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="inline-flex min-h-[44px] cursor-pointer items-center justify-center gap-1 rounded-xl border border-emerald-500/50 bg-emerald-950/60 px-2.5 text-[11px] font-bold text-emerald-200 uppercase transition hover:bg-emerald-900/60 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <Banknote className="h-3.5 w-3.5" />
                     Tahsil Et

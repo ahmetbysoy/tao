@@ -3,6 +3,7 @@ import { Activity, Flame, ShieldAlert, Volume2, Zap } from "lucide-react";
 
 interface HeroGateProps {
   livePrices: Record<string, number>;
+  binanceConnected: boolean;
   supabaseReady: boolean;
   onEnter: () => void;
 }
@@ -17,39 +18,54 @@ const PREVIEW_TRADERS = [
 
 export const HeroGate: React.FC<HeroGateProps> = ({
   livePrices,
+  binanceConnected,
   supabaseReady,
   onEnter,
 }) => {
   return (
-    <div className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden px-4 py-12 text-center">
+    <div className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden px-4 py-10 text-center">
       {/* Ambient neon beams */}
       <div className="pointer-events-none absolute top-1/4 left-1/2 h-96 w-96 -translate-x-1/2 -translate-y-1/2 rounded-full bg-red-600/15 blur-[130px]" />
       <div className="pointer-events-none absolute right-1/4 bottom-1/4 h-72 w-72 rounded-full bg-amber-500/10 blur-[120px]" />
 
-      <div className="relative z-10 mx-auto max-w-2xl space-y-8">
+      <div className="relative z-10 mx-auto max-w-2xl space-y-6 sm:space-y-8">
         {/* Live telemetry pill */}
-        <div className="inline-flex flex-wrap items-center justify-center gap-3 rounded-full border border-zinc-800 bg-zinc-950/90 px-4 py-1.5 text-xs font-mono text-zinc-300 shadow-lg">
-          <span className="inline-flex items-center gap-1.5 text-emerald-400">
-            <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-            BINANCE FUTURES CANLI
+        <div className="inline-flex flex-wrap items-center justify-center gap-2.5 rounded-full border border-zinc-800 bg-zinc-950/90 px-4 py-1.5 text-xs font-mono text-zinc-300 shadow-lg">
+          <span
+            className={`inline-flex items-center gap-1.5 ${
+              binanceConnected ? "text-emerald-400" : "text-amber-400"
+            }`}
+          >
+            <span
+              className={`h-2 w-2 rounded-full animate-pulse ${
+                binanceConnected ? "bg-emerald-400" : "bg-amber-400"
+              }`}
+            />
+            {binanceConnected ? "BINANCE FUTURES CANLI" : "BINANCE BAĞLANIYOR..."}
           </span>
           <span className="text-zinc-700">|</span>
           <span>
             BTC{" "}
             <strong className="text-white">
-              ${livePrices.BTCUSDT ? livePrices.BTCUSDT.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}
+              {binanceConnected && livePrices.BTCUSDT
+                ? `$${livePrices.BTCUSDT.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                : "—"}
             </strong>
           </span>
           <span>
             ETH{" "}
             <strong className="text-white">
-              ${livePrices.ETHUSDT ? livePrices.ETHUSDT.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}
+              {binanceConnected && livePrices.ETHUSDT
+                ? `$${livePrices.ETHUSDT.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                : "—"}
             </strong>
           </span>
           <span>
             SOL{" "}
             <strong className="text-white">
-              ${livePrices.SOLUSDT ? livePrices.SOLUSDT.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}
+              {binanceConnected && livePrices.SOLUSDT
+                ? `$${livePrices.SOLUSDT.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                : "—"}
             </strong>
           </span>
         </div>
@@ -58,7 +74,7 @@ export const HeroGate: React.FC<HeroGateProps> = ({
         <div className="space-y-3">
           <div className="inline-flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[11px] font-bold tracking-[0.25em] text-amber-400 uppercase">
             <Flame className="h-3.5 w-3.5" />
-            FAZ 2 // DOPAMİN TERMİNALİ
+            TUR 1 // CANLI BINANCE TERMİNALİ
           </div>
           <h1 className="font-display text-5xl font-black tracking-tight text-white uppercase sm:text-7xl">
             TEFECİ{" "}

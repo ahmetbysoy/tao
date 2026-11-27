@@ -19,6 +19,7 @@ export interface LedgerEntry {
 
 interface DebtLedgerProps {
   entries: LedgerEntry[];
+  embedded?: boolean;
   onExportJson: (filtered: LedgerEntry[]) => void;
   onExportMarkdown: (filtered: LedgerEntry[]) => void;
 }
@@ -27,6 +28,7 @@ type OutcomeFilter = "ALL" | "LOSS" | "WIN" | "LIQ";
 
 export const DebtLedger: React.FC<DebtLedgerProps> = ({
   entries,
+  embedded = false,
   onExportJson,
   onExportMarkdown,
 }) => {
@@ -74,13 +76,21 @@ export const DebtLedger: React.FC<DebtLedgerProps> = ({
   const winRate = filtered.length > 0 ? Math.round((wins / filtered.length) * 100) : 0;
 
   return (
-    <section className="rounded-xl border border-zinc-800/90 bg-zinc-950/90 p-4 shadow-xl">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+    <section
+      className={
+        embedded
+          ? "space-y-3"
+          : "rounded-xl border border-zinc-800/90 bg-zinc-950/90 p-4 shadow-xl"
+      }
+    >
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="font-display flex items-center gap-2 text-sm font-black tracking-wider text-rose-400 uppercase sm:text-base">
-            <BookOpen className="h-4 w-4 text-rose-500" />
-            İntikam Defteri (The Ledger)
-          </h2>
+          {!embedded && (
+            <h2 className="font-display flex items-center gap-2 text-sm font-black tracking-wider text-rose-400 uppercase sm:text-base">
+              <BookOpen className="h-4 w-4 text-rose-500" />
+              İntikam Defteri (The Ledger)
+            </h2>
+          )}
           <div className="mt-1 flex flex-wrap items-center gap-3 font-mono text-[11px] text-zinc-400">
             <span>
               Kayıt: <strong className="text-zinc-200">{filtered.length}</strong>
@@ -100,40 +110,42 @@ export const DebtLedger: React.FC<DebtLedgerProps> = ({
 
         <div className="flex flex-wrap gap-2">
           <button
+            type="button"
             onClick={() => onExportJson(filtered)}
-            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-bold text-zinc-200 transition hover:bg-zinc-800"
+            className="inline-flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-xl border border-zinc-700 bg-zinc-900 px-3 text-xs font-bold text-zinc-200 transition hover:bg-zinc-800 active:scale-95"
           >
             <Download className="h-3.5 w-3.5" />
-            Logları İndir (JSON)
+            JSON
           </button>
           <button
+            type="button"
             onClick={() => onExportMarkdown(filtered)}
-            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-rose-700/80 bg-rose-950/60 px-3 py-1.5 text-xs font-bold text-rose-200 transition hover:bg-rose-900/60"
+            className="inline-flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-xl border border-rose-700/80 bg-rose-950/60 px-3 text-xs font-bold text-rose-200 transition hover:bg-rose-900/60 active:scale-95"
           >
             <FileText className="h-3.5 w-3.5" />
-            Zarar Raporu (MD)
+            Rapor (MD)
           </button>
         </div>
       </div>
 
       {/* Filter toolbar */}
       <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-zinc-900 bg-black/50 p-2.5">
-        <div className="relative min-w-[180px] flex-1">
+        <div className="relative min-w-[160px] flex-1">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Sebep, coin veya trader ara..."
-            className="w-full rounded-md border border-zinc-800 bg-zinc-950 py-1.5 pr-3 pl-8 text-xs text-zinc-200 placeholder:text-zinc-600 focus:border-amber-500/60 focus:outline-none"
+            className="min-h-[44px] w-full rounded-lg border border-zinc-800 bg-zinc-950 py-1.5 pr-3 pl-8 text-xs text-zinc-200 placeholder:text-zinc-600 focus:border-amber-500/60 focus:outline-none"
           />
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           <Filter className="h-3.5 w-3.5 text-zinc-500" />
           <select
             value={traderFilter}
             onChange={(e) => setTraderFilter(e.target.value)}
-            className="rounded-md border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs text-zinc-200 focus:border-amber-500/60 focus:outline-none"
+            className="min-h-[44px] rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 text-xs text-zinc-200 focus:border-amber-500/60 focus:outline-none"
           >
             <option value="ALL">Tüm Trader&apos;lar</option>
             {uniqueTraders.map((name) => (
@@ -146,7 +158,7 @@ export const DebtLedger: React.FC<DebtLedgerProps> = ({
           <select
             value={symbolFilter}
             onChange={(e) => setSymbolFilter(e.target.value)}
-            className="rounded-md border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 font-mono text-xs text-zinc-200 focus:border-amber-500/60 focus:outline-none"
+            className="min-h-[44px] rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 font-mono text-xs text-zinc-200 focus:border-amber-500/60 focus:outline-none"
           >
             <option value="ALL">Tüm Coin&apos;ler</option>
             {uniqueSymbols.map((sym) => (
@@ -168,8 +180,9 @@ export const DebtLedger: React.FC<DebtLedgerProps> = ({
           ).map(([id, label]) => (
             <button
               key={id}
+              type="button"
               onClick={() => setOutcomeFilter(id)}
-              className={`cursor-pointer rounded border px-2 py-1 text-[11px] font-bold transition ${
+              className={`min-h-[44px] cursor-pointer rounded-lg border px-2.5 text-[11px] font-bold transition ${
                 outcomeFilter === id
                   ? "border-rose-500/60 bg-rose-500/20 text-rose-200"
                   : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200"

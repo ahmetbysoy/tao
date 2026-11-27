@@ -82,7 +82,20 @@ interface MarketTicker {
   price: number;
   fundingRate: number;
   changePct24h: number;
+  bidQty: number;
+  askQty: number;
+  imbalance: number;
   source: string;
+}
+
+function calcImbalance(bidQty: number, askQty: number): number {
+  const total = bidQty + askQty;
+  return total > 0 ? Number(((bidQty - askQty) / total).toFixed(4)) : 0;
+}
+
+function determineOrderbookSide(tk: MarketTicker | undefined): "LONG" | "SHORT" {
+  if (!tk) return "LONG";
+  return tk.imbalance >= 0 ? "LONG" : "SHORT";
 }
 
 class RestDb {
@@ -157,11 +170,14 @@ async function fetchLiveMarket(): Promise<{
 
   // 1. Primary: Binance Futures (fast timeout; works directly from Frankfurt eu-central-1)
   try {
-    const [premRes, tickRes] = await Promise.all([
+    const [premRes, tickRes, bookRes] = await Promise.all([
       fetch("https://fapi.binance.com/fapi/v1/premiumIndex", {
         signal: AbortSignal.timeout(2200),
       }),
       fetch("https://fapi.binance.com/fapi/v1/ticker/24hr", {
+        signal: AbortSignal.timeout(2200),
+      }),
+      fetch("https://fapi.binance.com/fapi/v1/ticker/bookTicker", {
         signal: AbortSignal.timeout(2200),
       }),
     ]);
@@ -169,16 +185,26 @@ async function fetchLiveMarket(): Promise<{
     if (premRes.ok && tickRes.ok) {
       const premArr = (await premRes.json()) as Array<Record<string, string>>;
       const tickArr = (await tickRes.json()) as Array<Record<string, string>>;
+      const bookArr = bookRes.ok
+        ? ((await bookRes.json()) as Array<Record<string, string>>)
+        : [];
       const tickMap = new Map(tickArr.map((t) => [t.symbol, t]));
+      const bookMap = new Map(bookArr.map((b) => [b.symbol, b]));
 
       for (const p of premArr) {
         if (symbols.includes(p.symbol)) {
           const t24 = tickMap.get(p.symbol);
+          const bk = bookMap.get(p.symbol);
+          const bidQty = Number(bk?.bidQty || 0);
+          const askQty = Number(bk?.askQty || 0);
           tickers[p.symbol] = {
             symbol: p.symbol,
             price: Number(p.markPrice || t24?.lastPrice || 0),
             fundingRate: Number(p.lastFundingRate || 0),
             changePct24h: Number(t24?.priceChangePercent || 0),
+            bidQty,
+            askQty,
+            imbalance: calcImbalance(bidQty, askQty),
             source: "binance_futures",
           };
         }
@@ -209,11 +235,16 @@ async function fetchLiveMarket(): Promise<{
         const last = Number(row.last || 0);
         const open24h = Number(row.open24h || last);
         const pct = open24h > 0 ? ((last - open24h) / open24h) * 100 : 0;
+        const bidQty = Number(row.bidSz || 0);
+        const askQty = Number(row.askSz || 0);
         tickers[sym] = {
           symbol: sym,
           price: last,
           fundingRate: 0.0001,
           changePct24h: Number(pct.toFixed(3)),
+          bidQty,
+          askQty,
+          imbalance: calcImbalance(bidQty, askQty),
           source: "okx_swap",
         };
       }
@@ -614,70 +645,36 @@ async function processPendingCommands(
         db.select("positions", "select=*&status=eq.open"),
       ]);
       const openSet = new Set(openPos.map((p) => `${p.trader_id}:${p.symbol}`));
-      const availSyms = Object.keys(tickers);
+      const availSyms = Object.keys(tickers).filter((s) => (tickers[s]?.price ?? 0) > 0);
       const reqSym = String(payload.symbol || "").toUpperCase();
+      // Deterministic symbol pick: requested symbol, else strongest live orderbook imbalance
       const sym = availSyms.includes(reqSym)
         ? reqSym
-        : availSyms[Math.floor(Math.random() * availSyms.length)] || "BTCUSDT";
-      const px = tickers[sym]?.price || 0;
+        : availSyms.sort(
+            (a, b) => Math.abs(tickers[b]?.imbalance ?? 0) - Math.abs(tickers[a]?.imbalance ?? 0)
+          )[0] || "BTCUSDT";
+      const tk = tickers[sym];
+      const px = tk?.price || 0;
+      const liveSide = determineOrderbookSide(tk);
 
-      const list = allTraders.filter((t) => (!tid ? true : t.id === tid));
+      const list = allTraders
+        .filter((t) => (!tid ? true : t.id === tid))
+        .sort((a, b) => Number(b.balance || 0) - Number(a.balance || 0));
       for (const tr of list) {
         if (openSet.has(`${tr.id}:${sym}`) || Number(tr.balance) < 50) continue;
         const sideRaw = String(payload.side || "").toUpperCase();
         const side: "LONG" | "SHORT" =
-          sideRaw === "LONG" || sideRaw === "SHORT"
-            ? sideRaw
-            : Math.random() > 0.45
-            ? "LONG"
-            : "SHORT";
-        await openPosition(db, tr, sym, side, px, `Mahalle baskısı & canlı ${sym} momentum girişi`);
+          sideRaw === "LONG" || sideRaw === "SHORT" ? sideRaw : liveSide;
+        await openPosition(
+          db,
+          tr,
+          sym,
+          side,
+          px,
+          `Canlı emir defteri dengesi (OBI=${(tk?.imbalance ?? 0).toFixed(2)}) — ${sym} girişi`
+        );
         break;
       }
-    } else if (evType === "SIMULATE_WHALE") {
-      const sym = String(payload.symbol || "SOLUSDT").toUpperCase();
-      const px = tickers[sym]?.price || tickers.BTCUSDT?.price || 70;
-      const notional = Math.max(1_050_000, Number(payload.notional_usdt || 1_480_000));
-      const side = String(payload.side || "SELL");
-
-      let seloDebt = await findDebt(undefined, "selo");
-      if (!seloDebt) {
-        const rows = await db.select("debts", "select=*&status=in.(aktif,gecikti)&limit=1");
-        seloDebt = rows[0] ?? null;
-      }
-
-      let newRatePct = 0;
-      let newRate = 0;
-      if (seloDebt) {
-        newRate = Number(Math.min(Number(seloDebt.interest_rate) * 1.5, 3.0).toFixed(4));
-        newRatePct = newRate * 100;
-        await db.patch("debts", `id=eq.${encodeURIComponent(seloDebt.id)}`, {
-          interest_rate: newRate,
-          updated_at: new Date().toISOString(),
-        });
-      }
-
-      const notionalM = (notional / 1_000_000).toFixed(2);
-      await db.patch("traders", "id=eq.selo", {
-        mood: "greedy",
-        last_signal: `BALİNA PATLADI (${sym} $${notionalM}M)! Faiz +%50 arttı!`,
-        updated_at: new Date().toISOString(),
-      });
-
-      await db.insert("events", {
-        type: "WHALE_ALERT",
-        trader_id: "selo",
-        message: `BALİNA PATLADI! ${sym} üzerinde $${notionalM}M tek seferde likide oldu! Selo Roket kan kokusunu aldı, borç faizi otomatik %50 artırıldı (Yeni faiz: %${newRatePct.toFixed(1)})!`,
-        payload: {
-          symbol: sym,
-          side,
-          notional_usdt: Number(notional.toFixed(2)),
-          avg_price: px,
-          debt_id: seloDebt?.id ?? null,
-          new_interest_rate: newRate || null,
-        },
-        processed: true,
-      });
     }
   }
 
@@ -772,23 +769,26 @@ async function runAutonomousTick(
 
     const tk = tickers[sym];
     const absChg = Math.abs(tk.changePct24h);
+    const absObi = Math.abs(tk.imbalance);
+    const absFund = Math.abs(tk.fundingRate);
     let side: "LONG" | "SHORT" | null = null;
     let reason = "";
 
-    if (tr.id === "selo" && (absChg >= 0.4 || Math.random() < 0.28)) {
-      side = tk.changePct24h >= 0 ? "LONG" : "SHORT";
-      reason = `Hacim patlaması (${tk.changePct24h >= 0 ? "+" : ""}${tk.changePct24h.toFixed(2)}%) — Selo kan kokusu aldı`;
-    } else if (tr.id === "kemal" && Math.random() < 0.22) {
-      side = tk.changePct24h >= -0.5 ? "LONG" : "SHORT";
-      reason = `Tahta dengesizliği (${sym} @ $${tk.price.toFixed(2)})`;
-    } else if (tr.id === "nuri" && (Math.abs(tk.fundingRate) >= 0.00005 || Math.random() < 0.18)) {
+    // 100% real-market deterministic triggers (zero Math.random)
+    if (tr.id === "selo" && (absChg >= 0.45 || absObi >= 0.35)) {
+      side = absObi >= 0.35 ? determineOrderbookSide(tk) : tk.changePct24h >= 0 ? "LONG" : "SHORT";
+      reason = `Hacim/OBI patlaması (${tk.changePct24h >= 0 ? "+" : ""}${tk.changePct24h.toFixed(2)}%, OBI=${tk.imbalance.toFixed(2)})`;
+    } else if (tr.id === "kemal" && absObi >= 0.2) {
+      side = determineOrderbookSide(tk);
+      reason = `Gerçek tahta dengesizliği (OBI=${tk.imbalance.toFixed(2)} @ $${tk.price.toFixed(2)})`;
+    } else if (tr.id === "nuri" && absFund >= 0.00005) {
       side = tk.fundingRate >= 0 ? "SHORT" : "LONG";
       reason = `Funding contrarian (${(tk.fundingRate * 100).toFixed(4)}%)`;
-    } else if (tr.id === "mehmet" && Math.random() < 0.2) {
+    } else if (tr.id === "mehmet" && (absChg >= 1.0 || absObi >= 0.3)) {
       side = tk.changePct24h < 0 ? "LONG" : "SHORT";
-      reason = `Fitil tepki taraması (${sym})`;
-    } else if (tr.id === "sevil" && Math.random() < 0.14) {
-      side = tk.changePct24h > 1.5 ? "SHORT" : "LONG";
+      reason = `Fitil tepki taraması (${sym}, 24s ${tk.changePct24h.toFixed(2)}%)`;
+    } else if (tr.id === "sevil" && (absChg >= 1.4 || (absObi >= 0.25 && absFund >= 0.00003))) {
+      side = tk.changePct24h > 1.0 ? "SHORT" : "LONG";
       reason = `Ortalamaya dönüş disiplini (${sym})`;
     }
 
@@ -879,7 +879,7 @@ async function runAutonomousTick(
       eth_price: Number(ethPrice.toFixed(2)),
     });
 
-    if (Math.random() < 0.15) {
+    if (Math.floor(nowMs / 15000) % 10 === 0) {
       const [oldSnaps, oldEvents] = await Promise.all([
         db.select("equity_snapshots", "select=id&order=id.desc&offset=180&limit=100"),
         db.select("events", "select=id&processed=eq.true&order=id.desc&offset=250&limit=150"),

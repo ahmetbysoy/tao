@@ -1,8 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import confetti from "canvas-confetti";
-import { Skull, Sparkles } from "lucide-react";
+import { BookOpen, Flame, Skull, Sparkles } from "lucide-react";
 import { HeroGate } from "./components/HeroGate";
 import { PriceTick, TerminalHeader } from "./components/TerminalHeader";
+import { BottomNav, NavTab } from "./components/BottomNav";
+import { BottomSheet } from "./components/BottomSheet";
+import { LiquidationShow } from "./components/LiquidationShow";
+import { FitilAvi } from "./components/FitilAvi";
 import { KpiBar } from "./components/KpiBar";
 import { LiveEquityChart } from "./components/LiveEquityChart";
 import { DarkPatternAlerts, UrgentDebt } from "./components/DarkPatternAlerts";
@@ -15,12 +19,27 @@ import {
   DebtRow,
   EquitySnapshotRow,
   EventRow,
+  getCloudWorkerHealthUrl,
   isSupabaseConfigured,
   PositionRow,
   pushCommand,
   subscribeTable,
   TraderRow,
 } from "./utils/supabase";
+import {
+  hapticLong,
+  hapticMedium,
+  hapticShort,
+  isHapticsEnabled,
+  setHapticsEnabled,
+} from "./utils/haptics";
+import { isShakeEnabled, setShakeEnabled } from "./utils/motion";
+import {
+  formatCompactUsd,
+  LiveLiquidationItem,
+  parseForceOrderFrame,
+  SHAKE_COOLDOWN_MS,
+} from "./utils/liquidation";
 import {
   isSfxEnabled,
   playCashRegister,
@@ -55,8 +74,22 @@ interface ToastItem {
   tone: "danger" | "gold" | "success" | "info";
 }
 
+interface LiqStats {
+  cumulativeUsdt: number;
+  eventCount: number;
+  impactCount: number;
+  whaleCount: number;
+}
+
+const BINANCE_PUBLIC_WSS =
+  "wss://fstream.binance.com/public/stream?streams=btcusdt@bookTicker/ethusdt@bookTicker/solusdt@bookTicker";
+const BINANCE_MARKET_WSS =
+  "wss://fstream.binance.com/market/stream?streams=!forceOrder@arr";
+
 export default function App() {
   const [entered, setEntered] = useState(false);
+  const [activeTab, setActiveTab] = useState<NavTab>("market");
+
   const [ticks, setTicks] = useState<Record<string, PriceTick>>({});
   const [binanceConnected, setBinanceConnected] = useState(false);
   const [supabaseConnected, setSupabaseConnected] = useState(false);
@@ -68,10 +101,28 @@ export default function App() {
   const [events, setEvents] = useState<EventRow[]>([]);
   const [snapshots, setSnapshots] = useState<EquitySnapshotRow[]>([]);
 
+  // Real Binance !forceOrder@arr Liquidation Show state (Ece)
+  const [liquidations, setLiquidations] = useState<LiveLiquidationItem[]>([]);
+  const [liqStats, setLiqStats] = useState<LiqStats>({
+    cumulativeUsdt: 0,
+    eventCount: 0,
+    impactCount: 0,
+    whaleCount: 0,
+  });
+  const [microShakeActive, setMicroShakeActive] = useState(false);
+  const [flashingTraderIds, setFlashingTraderIds] = useState<Record<string, number>>({});
+
+  // Controls & settings (Hayri + Ece)
   const [sfxOn, setSfxOn] = useState<boolean>(() => isSfxEnabled());
   const [ttsOn, setTtsOn] = useState<boolean>(() => isTtsEnabled());
+  const [hapticsOn, setHapticsOn] = useState<boolean>(() => isHapticsEnabled());
+  const [shakeOn, setShakeOn] = useState<boolean>(() => isShakeEnabled());
+
+  // Drawers & overlays
   const [loanModalOpen, setLoanModalOpen] = useState(false);
   const [loanModalTrader, setLoanModalTrader] = useState<TraderVoiceId>("selo");
+  const [ledgerSheetOpen, setLedgerSheetOpen] = useState(false);
+
   const [triggerBusy, setTriggerBusy] = useState(false);
   const [liqFlashKey, setLiqFlashKey] = useState<number>(0);
   const [whaleFlashKey, setWhaleFlashKey] = useState<number>(0);
@@ -79,23 +130,35 @@ export default function App() {
   const [whaleBannerText, setWhaleBannerText] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
+  // Refs that prevent WebSocket teardown on state updates & eliminate Math.random()
+  const toastIdRef = useRef<number>(0);
+  const enteredRef = useRef<boolean>(entered);
+  enteredRef.current = entered;
+  const shakeOnRef = useRef<boolean>(shakeOn);
+  shakeOnRef.current = shakeOn;
+  const openPositionsRef = useRef<OpenPosition[]>([]);
+
   const lastSeenEventIdRef = useRef<number>(0);
   const initializedEventsRef = useRef<boolean>(false);
   const lastWhaleAlertMsRef = useRef<number>(0);
+  const lastShakeMsRef = useRef<number>(0);
+  const lastImpactToastMsRef = useRef<number>(0);
   const whalePanicTimerRef = useRef<number | null>(null);
+  const microShakeTimerRef = useRef<number | null>(null);
 
   const addToast = useCallback(
     (title: string, message: string, tone: ToastItem["tone"] = "info") => {
-      const id = Date.now() + Math.floor(Math.random() * 1000);
-      setToasts((prev) => [...prev.slice(-3), { id, title, message, tone }]);
+      toastIdRef.current += 1;
+      const id = toastIdRef.current;
+      setToasts((prev) => [...prev.slice(-2), { id, title, message, tone }]);
       window.setTimeout(() => {
         setToasts((prev) => prev.filter((t) => t.id !== id));
-      }, 4500);
+      }, 4200);
     },
     []
   );
 
-  // Faz 3 Dark Pattern: Whale Alert Manipulator ($1M+ Binance liquidation)
+  // Real $1M+ Whale Liquidation Manipulator (only triggered by real !forceOrder@arr or backend WHALE_ALERT)
   const triggerWhaleManipulator = useCallback(
     (symbol: string, notionalUsdt: number, customMsg?: string) => {
       const now = Date.now();
@@ -105,19 +168,16 @@ export default function App() {
       const notionalM = (notionalUsdt / 1_000_000).toFixed(2);
       const banner =
         customMsg ||
-        `${symbol} üzerinde $${notionalM}M tek seferde likide oldu! Selo Roket kan kokusunu aldı, borç faizi otomatik %50 artırıldı!`;
+        `${symbol} üzerinde $${notionalM}M tek seferde likide oldu! Selo Roket kan kokusunu aldı, faiz baskısı zirvede!`;
 
-      // 1. 0.5-second blood-red full-screen flash
       setWhaleFlashKey(now);
-
-      // 2. Whale siren + Turkish TTS scream
+      hapticLong();
       playWhaleAlertSiren();
       speakAs(
         "tefeci",
-        "BALİNA PATLADI! Selo Roket kan kokusunu aldı, borç faizini otomatik yüzde elli artırdım!"
+        "BALİNA PATLADI! Selo Roket kan kokusunu aldı, borç faizini sıkılaştır!"
       );
 
-      // 3. Activate pulsing heartbeat mode on "FAİZİ KATLA" buttons for 15 seconds
       setWhaleBannerText(banner);
       setWhalePanicActive(true);
       if (whalePanicTimerRef.current) {
@@ -128,8 +188,8 @@ export default function App() {
       }, 15_000);
 
       confetti({
-        particleCount: 130,
-        spread: 110,
+        particleCount: 110,
+        spread: 100,
         origin: { y: 0.45 },
         colors: ["#dc2626", "#ef4444", "#f59e0b"],
       });
@@ -138,79 +198,195 @@ export default function App() {
     [addToast]
   );
 
-  // Live Binance Futures WebSocket (bookTicker + $1M+ forceOrder Whale Alert stream)
+  // Real Binance Futures WebSockets (2026 split endpoints):
+  //   1) /public/stream -> live bookTicker (BTC/ETH/SOL)
+  //   2) /market/stream -> live all-market !forceOrder@arr liquidations
   useEffect(() => {
     let closed = false;
-    let ws: WebSocket | null = null;
-    let retryTimer: number | null = null;
+    let publicWs: WebSocket | null = null;
+    let marketWs: WebSocket | null = null;
+    let publicRetryTimer: number | null = null;
+    let marketRetryTimer: number | null = null;
 
-    const connect = () => {
+    const connectPublic = () => {
       if (closed) return;
-      ws = new WebSocket(
-        "wss://fstream.binance.com/stream?streams=btcusdt@bookTicker/ethusdt@bookTicker/solusdt@bookTicker/btcusdt@forceOrder/ethusdt@forceOrder/solusdt@forceOrder"
-      );
-      ws.onopen = () => setBinanceConnected(true);
-      ws.onclose = () => {
+      publicWs = new WebSocket(BINANCE_PUBLIC_WSS);
+
+      publicWs.onopen = () => setBinanceConnected(true);
+      publicWs.onclose = () => {
         setBinanceConnected(false);
         if (!closed) {
-          retryTimer = window.setTimeout(connect, 2500);
+          publicRetryTimer = window.setTimeout(connectPublic, 2500);
         }
       };
-      ws.onerror = () => {
+      publicWs.onerror = () => {
         setBinanceConnected(false);
       };
-      ws.onmessage = (ev) => {
+
+      publicWs.onmessage = (ev) => {
         try {
           const msg = JSON.parse(ev.data);
           const stream: string = msg.stream ?? "";
           const d = msg.data;
+
           if (stream.endsWith("@bookTicker") && d?.s && d?.b && d?.a) {
-            const mid = (parseFloat(d.b) + parseFloat(d.a)) / 2;
+            const bid = parseFloat(d.b);
+            const ask = parseFloat(d.a);
+            if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0) {
+              return;
+            }
+            const mid = (bid + ask) / 2;
+            const now = Date.now();
             setTicks((prev) => ({
               ...prev,
               [d.s]: {
                 price: mid,
                 prevPrice: prev[d.s]?.price ?? mid,
+                updatedAtMs: now,
               },
             }));
-          } else if (stream.endsWith("@forceOrder") && d?.o) {
-            const o = d.o;
-            const avgPx = parseFloat(o.ap ?? o.p ?? "0");
-            const qty = parseFloat(o.q ?? "0");
-            const notional = avgPx * qty;
-            if (notional >= 1_000_000 && entered) {
-              triggerWhaleManipulator(String(o.s ?? "BTCUSDT"), notional);
-            }
           }
         } catch {
-          // Ignore malformed frame
+          // Ignore malformed WS frame
         }
       };
     };
 
-    connect();
+    const connectMarket = () => {
+      if (closed) return;
+      marketWs = new WebSocket(BINANCE_MARKET_WSS);
+
+      marketWs.onclose = () => {
+        if (!closed) {
+          marketRetryTimer = window.setTimeout(connectMarket, 2500);
+        }
+      };
+
+      marketWs.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          const stream: string = msg.stream ?? "";
+          const d = msg.data ?? msg;
+
+          if (
+            stream === "!forceOrder@arr" ||
+            stream.endsWith("@forceOrder") ||
+            d?.e === "forceOrder"
+          ) {
+            const item = parseForceOrderFrame(d?.o);
+            if (!item) return;
+
+            setLiquidations((prev) => [item, ...prev].slice(0, 32));
+            setLiqStats((prev) => ({
+              cumulativeUsdt: prev.cumulativeUsdt + item.notionalUsdt,
+              eventCount: prev.eventCount + 1,
+              impactCount:
+                prev.impactCount + (item.tier === "impact" || item.tier === "whale" ? 1 : 0),
+              whaleCount: prev.whaleCount + (item.tier === "whale" ? 1 : 0),
+            }));
+
+            if (!enteredRef.current) return;
+
+            const now = Date.now();
+
+            // Tier 2 ($100K+) & Tier 3 ($1M+): micro-shake + affected trader red flash + haptic
+            if (item.tier === "impact" || item.tier === "whale") {
+              if (shakeOnRef.current && now - lastShakeMsRef.current >= SHAKE_COOLDOWN_MS) {
+                lastShakeMsRef.current = now;
+                setMicroShakeActive(true);
+                if (microShakeTimerRef.current) {
+                  window.clearTimeout(microShakeTimerRef.current);
+                }
+                microShakeTimerRef.current = window.setTimeout(() => {
+                  setMicroShakeActive(false);
+                }, 220);
+              }
+
+              // Flash trader cards currently holding an open position on this liquidated symbol
+              const affectedTraderIds = Array.from(
+                new Set(
+                  openPositionsRef.current
+                    .filter((p) => p.symbol.toUpperCase() === item.symbol)
+                    .map((p) => p.traderId)
+                )
+              );
+              if (affectedTraderIds.length > 0) {
+                setFlashingTraderIds((prev) => {
+                  const next = { ...prev };
+                  affectedTraderIds.forEach((tid) => {
+                    next[tid] = now;
+                  });
+                  return next;
+                });
+                window.setTimeout(() => {
+                  setFlashingTraderIds((prev) => {
+                    const next = { ...prev };
+                    affectedTraderIds.forEach((tid) => {
+                      if (next[tid] === now) delete next[tid];
+                    });
+                    return next;
+                  });
+                }, 950);
+              }
+
+              if (item.tier === "impact") {
+                hapticShort();
+                if (now - lastImpactToastMsRef.current >= 4500) {
+                  lastImpactToastMsRef.current = now;
+                  addToast(
+                    `Sert Likidasyon (${formatCompactUsd(item.notionalUsdt)})`,
+                    `${item.symbol} ${item.liquidatedSide} pozisyonu $${item.price.toFixed(item.price < 10 ? 4 : 2)} seviyesinde patladı.`,
+                    "danger"
+                  );
+                }
+              } else {
+                triggerWhaleManipulator(item.symbol, item.notionalUsdt);
+              }
+            }
+          }
+        } catch {
+          // Ignore malformed WS frame
+        }
+      };
+    };
+
+    connectPublic();
+    connectMarket();
     return () => {
       closed = true;
-      if (retryTimer) window.clearTimeout(retryTimer);
-      ws?.close();
+      if (publicRetryTimer) window.clearTimeout(publicRetryTimer);
+      if (marketRetryTimer) window.clearTimeout(marketRetryTimer);
+      if (microShakeTimerRef.current) window.clearTimeout(microShakeTimerRef.current);
+      if (whalePanicTimerRef.current) window.clearTimeout(whalePanicTimerRef.current);
+      publicWs?.close();
+      marketWs?.close();
     };
-  }, [entered, triggerWhaleManipulator]);
+  }, [addToast, triggerWhaleManipulator]);
 
-  // Poll worker /health via Vite relative proxy
+  // Sinan: Poll real Frankfurt Cloud Worker /health (fallback to relative /health in local dev)
   useEffect(() => {
     if (!entered) return;
     let active = true;
+    const healthUrl = getCloudWorkerHealthUrl() ?? "/health";
+
     const pollHealth = async () => {
       try {
-        const res = await fetch("/health");
+        const res = await fetch(healthUrl, { cache: "no-store" });
         if (!active) return;
-        setWorkerHealthy(res.ok);
+        if (!res.ok) {
+          setWorkerHealthy(false);
+          return;
+        }
+        const payload = await res.json().catch(() => null);
+        if (!active) return;
+        setWorkerHealthy(payload?.status === "ok" || res.ok);
       } catch {
-        if (active) setWorkerHealthy(null);
+        if (active) setWorkerHealthy(false);
       }
     };
+
     pollHealth();
-    const timer = window.setInterval(pollHealth, 8000);
+    const timer = window.setInterval(pollHealth, 12_000);
     return () => {
       active = false;
       window.clearInterval(timer);
@@ -267,14 +443,15 @@ export default function App() {
         fresh.forEach((ev) => {
           if (ev.type === "WHALE_ALERT") {
             const sym = String(ev.payload?.symbol ?? "BTCUSDT");
-            const notional = Number(ev.payload?.notional_usdt ?? 1_250_000);
+            const notional = Number(ev.payload?.notional_usdt ?? 1_000_000);
             triggerWhaleManipulator(sym, notional, ev.message);
           } else if (ev.type === "LIQUIDATION") {
             setLiqFlashKey(Date.now());
+            hapticLong();
             playLiquidationSiren();
             confetti({
-              particleCount: 110,
-              spread: 95,
+              particleCount: 100,
+              spread: 90,
               origin: { y: 0.55 },
               colors: ["#ef4444", "#f59e0b", "#10b981"],
             });
@@ -327,71 +504,80 @@ export default function App() {
     return m;
   }, [traders]);
 
-  const { openPositions, closedLedger, openPnlByTrader, openCountByTrader, totalUnrealizedPnl, lockedMargin } =
-    useMemo(() => {
-      const openList: OpenPosition[] = [];
-      const closedList: LedgerEntry[] = [];
-      const pnlMap: Record<string, number> = {};
-      const countMap: Record<string, number> = {};
-      let sumUnrealized = 0;
-      let sumLocked = 0;
+  const {
+    openPositions,
+    closedLedger,
+    openPnlByTrader,
+    openCountByTrader,
+    totalUnrealizedPnl,
+    lockedMargin,
+  } = useMemo(() => {
+    const openList: OpenPosition[] = [];
+    const closedList: LedgerEntry[] = [];
+    const pnlMap: Record<string, number> = {};
+    const countMap: Record<string, number> = {};
+    let sumUnrealized = 0;
+    let sumLocked = 0;
 
-      positionRows.forEach((row) => {
-        const nickname = traderMap[row.trader_id]?.nickname ?? TRADER_NAMES[row.trader_id] ?? row.trader_id;
-        if (row.status === "open") {
-          const pos: OpenPosition = {
-            positionId: row.id,
-            traderId: row.trader_id,
-            nickname,
-            symbol: row.symbol,
-            side: row.side,
-            entryPrice: Number(row.entry_price),
-            qty: Number(row.qty),
-            leverage: Number(row.leverage),
-            isolatedMargin: Number(row.isolated_margin),
-            liquidationPrice: Number(row.liquidation_price),
-            stopLoss: row.stop_loss !== null ? Number(row.stop_loss) : null,
-            takeProfit: row.take_profit !== null ? Number(row.take_profit) : null,
-            reasonEntry: row.reason_entry ?? "",
-          };
-          openList.push(pos);
-          const cur = livePrices[pos.symbol] ?? pos.entryPrice;
-          const upnl =
-            pos.side === "LONG"
-              ? (cur - pos.entryPrice) * pos.qty
-              : (pos.entryPrice - cur) * pos.qty;
-          sumUnrealized += upnl;
-          sumLocked += pos.isolatedMargin;
-          pnlMap[pos.traderId] = (pnlMap[pos.traderId] ?? 0) + upnl;
-          countMap[pos.traderId] = (countMap[pos.traderId] ?? 0) + 1;
-        } else {
-          closedList.push({
-            positionId: row.id,
-            traderId: row.trader_id,
-            nickname,
-            symbol: row.symbol,
-            side: row.side,
-            leverage: Number(row.leverage),
-            entryPrice: Number(row.entry_price),
-            exitPrice: row.exit_price !== null ? Number(row.exit_price) : null,
-            netPnl: Number(row.pnl ?? 0),
-            reasonEntry: row.reason_entry ?? "",
-            reasonExit: row.log_reason || "Kapatıldı",
-            mood: row.mood || "focused",
-            closedAtMs: row.closed_at_ms ? Number(row.closed_at_ms) : null,
-          });
-        }
-      });
+    positionRows.forEach((row) => {
+      const nickname =
+        traderMap[row.trader_id]?.nickname ?? TRADER_NAMES[row.trader_id] ?? row.trader_id;
+      if (row.status === "open") {
+        const pos: OpenPosition = {
+          positionId: row.id,
+          traderId: row.trader_id,
+          nickname,
+          symbol: row.symbol,
+          side: row.side,
+          entryPrice: Number(row.entry_price),
+          qty: Number(row.qty),
+          leverage: Number(row.leverage),
+          isolatedMargin: Number(row.isolated_margin),
+          liquidationPrice: Number(row.liquidation_price),
+          stopLoss: row.stop_loss !== null ? Number(row.stop_loss) : null,
+          takeProfit: row.take_profit !== null ? Number(row.take_profit) : null,
+          reasonEntry: row.reason_entry ?? "",
+        };
+        openList.push(pos);
+        const cur = livePrices[pos.symbol] ?? pos.entryPrice;
+        const upnl =
+          pos.side === "LONG"
+            ? (cur - pos.entryPrice) * pos.qty
+            : (pos.entryPrice - cur) * pos.qty;
+        sumUnrealized += upnl;
+        sumLocked += pos.isolatedMargin;
+        pnlMap[pos.traderId] = (pnlMap[pos.traderId] ?? 0) + upnl;
+        countMap[pos.traderId] = (countMap[pos.traderId] ?? 0) + 1;
+      } else {
+        closedList.push({
+          positionId: row.id,
+          traderId: row.trader_id,
+          nickname,
+          symbol: row.symbol,
+          side: row.side,
+          leverage: Number(row.leverage),
+          entryPrice: Number(row.entry_price),
+          exitPrice: row.exit_price !== null ? Number(row.exit_price) : null,
+          netPnl: Number(row.pnl ?? 0),
+          reasonEntry: row.reason_entry ?? "",
+          reasonExit: row.log_reason || "Kapatıldı",
+          mood: row.mood || "focused",
+          closedAtMs: row.closed_at_ms ? Number(row.closed_at_ms) : null,
+        });
+      }
+    });
 
-      return {
-        openPositions: openList,
-        closedLedger: closedList,
-        openPnlByTrader: pnlMap,
-        openCountByTrader: countMap,
-        totalUnrealizedPnl: sumUnrealized,
-        lockedMargin: sumLocked,
-      };
-    }, [positionRows, traderMap, livePrices]);
+    return {
+      openPositions: openList,
+      closedLedger: closedList,
+      openPnlByTrader: pnlMap,
+      openCountByTrader: countMap,
+      totalUnrealizedPnl: sumUnrealized,
+      lockedMargin: sumLocked,
+    };
+  }, [positionRows, traderMap, livePrices]);
+
+  openPositionsRef.current = openPositions;
 
   const urgentDebts: UrgentDebt[] = useMemo(
     () =>
@@ -418,7 +604,8 @@ export default function App() {
   ).length;
   const totalCollected = debtRows.reduce((acc, d) => acc + Number(d.total_repaid ?? 0), 0);
   const totalAccruedInterest = debtRows.reduce(
-    (acc, d) => acc + Math.max(0, Number(d.principal) - Number(d.initial_principal ?? d.principal)),
+    (acc, d) =>
+      acc + Math.max(0, Number(d.principal) - Number(d.initial_principal ?? d.principal)),
     0
   );
   const totalLiquidations = traders.reduce((acc, t) => acc + Number(t.liquidation_count ?? 0), 0);
@@ -431,6 +618,7 @@ export default function App() {
   const handleEnterNeighborhood = async () => {
     unlockSfx();
     unlockAudio();
+    hapticMedium();
     playCashRegister();
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
       try {
@@ -446,36 +634,80 @@ export default function App() {
   const handleTriggerPulse = async (traderId?: TraderVoiceId, nickname?: string) => {
     if (triggerBusy) return;
     setTriggerBusy(true);
+    hapticShort();
     playClick();
     await pushCommand(
       "TRIGGER_TEST_TRADE",
       traderId ?? "",
       nickname
-        ? `${nickname} için canlı piyasa girişi kışkırtıldı!`
-        : "Mahalle piyasası kışkırtıldı — yeni canlı işlem açılıyor!",
+        ? `${nickname} için canlı orderbook piyasa girişi kışkırtıldı!`
+        : "Mahalle piyasası kışkırtıldı — canlı orderbook sinyaliyle işlem açılıyor!",
       traderId ? { trader_id: traderId } : {}
     );
     addToast(
       "Kışkırtma Emri Gönderildi",
-      nickname ? `${nickname} tahtaya sürülüyor...` : "Bir bot canlı Binance fiyatıyla işleme giriyor...",
+      nickname
+        ? `${nickname} canlı orderbook yönüyle tahtaya sürülüyor...`
+        : "Bir bot canlı Binance orderbook dengesiyle işleme giriyor...",
       "info"
     );
     window.setTimeout(() => setTriggerBusy(false), 1400);
   };
 
-  const handleSimulateWhale = async () => {
-    if (triggerBusy) return;
-    setTriggerBusy(true);
-    const symbol = "SOLUSDT";
-    const notional = 1_480_000;
-    triggerWhaleManipulator(symbol, notional);
-    await pushCommand(
-      "SIMULATE_WHALE",
-      "selo",
-      `BALİNA TESTİ: ${symbol} üzerinde $1.48M likidasyon tetiklendi!`,
-      { symbol, notional_usdt: notional, side: "SELL" }
+  const handleCollectFromTrader = (trader: TraderRow, debt: DebtRow) => {
+    const owed = Math.max(0, Number(debt.principal) - Number(debt.total_repaid ?? 0));
+    const bal = Number(trader.balance ?? 0);
+    const amount = Math.round(Math.min(bal * 0.5, owed) * 100) / 100;
+    if (amount <= 0) {
+      addToast("Bakiye Yetersiz", `${trader.nickname} kasasında tahsil edilecek nakit yok.`, "danger");
+      return;
+    }
+    hapticMedium();
+    playCashRegister();
+    speakAs("tefeci", `${trader.nickname} hesabından tahsilatı yaptım. Kasa büyür.`);
+    pushCommand(
+      "COLLECT_DEBT",
+      trader.id,
+      `${trader.nickname} hesabından $${amount.toFixed(2)} hızlı tahsilat emri!`,
+      { debt_id: debt.id, amount }
     );
-    window.setTimeout(() => setTriggerBusy(false), 2000);
+    addToast(
+      "Tahsilat Emri Gönderildi",
+      `${trader.nickname} kasasından $${amount.toFixed(2)} çekiliyor.`,
+      "success"
+    );
+  };
+
+  const handleToggleSfx = () => {
+    const next = !sfxOn;
+    setSfxOn(next);
+    setSfxEnabled(next);
+    hapticShort();
+    if (next) playClick();
+  };
+
+  const handleToggleTts = () => {
+    const next = !ttsOn;
+    setTtsOn(next);
+    setTtsEnabled(next);
+    hapticShort();
+    playClick();
+  };
+
+  const handleToggleHaptics = () => {
+    const next = !hapticsOn;
+    setHapticsOn(next);
+    setHapticsEnabled(next);
+    if (next) hapticShort();
+    playClick();
+  };
+
+  const handleToggleShake = () => {
+    const next = !shakeOn;
+    setShakeOn(next);
+    setShakeEnabled(next);
+    hapticShort();
+    playClick();
   };
 
   const downloadFile = (filename: string, content: string, mime: string) => {
@@ -488,23 +720,162 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+  const handleExportLedgerJson = (rows: LedgerEntry[]) => {
+    playClick();
+    downloadFile(
+      "tefeci-intikam-defteri.json",
+      JSON.stringify(rows, null, 2),
+      "application/json"
+    );
+  };
+
+  const handleExportLedgerMd = (rows: LedgerEntry[]) => {
+    playClick();
+    const md = [
+      "# TEFECİ İNTİKAM DEFTERİ — CANLI RAPOR",
+      "",
+      `Toplam Kayıt: **${rows.length}**`,
+      "",
+      "| Trader | Coin | Giriş → Çıkış | Net PnL | Giriş Nedeni | Çıkış / Batış Nedeni |",
+      "|---|---|---|---:|---|---|",
+      ...rows.map(
+        (l) =>
+          `| ${l.nickname} | ${l.symbol} ${l.side} ${l.leverage}x | $${l.entryPrice.toFixed(2)} → ${l.exitPrice ? `$${l.exitPrice.toFixed(2)}` : "-"} | ${l.netPnl >= 0 ? "+" : ""}${l.netPnl.toFixed(2)}$ | ${l.reasonEntry} | ${l.reasonExit} |`
+      ),
+    ].join("\n");
+    downloadFile("tefeci-zarar-raporu.md", md, "text/markdown");
+  };
+
   if (!entered) {
     return (
       <HeroGate
         livePrices={livePrices}
+        binanceConnected={binanceConnected}
         supabaseReady={isSupabaseConfigured()}
         onEnter={handleEnterNeighborhood}
       />
     );
   }
 
+  const darkPatternDesk = (
+    <DarkPatternAlerts
+      debts={urgentDebts}
+      whalePanicActive={whalePanicActive}
+      whaleBannerText={whaleBannerText}
+      onDoubleInterest={(debt) => {
+        pushCommand(
+          "DOUBLE_INTEREST",
+          debt.traderId,
+          `${debt.nickname} senet faizi 2'ye katlandı!`,
+          { debt_id: debt.debtId }
+        );
+        addToast("Faiz Katlandı!", `${debt.nickname} artık 2 katı faiz ödeyecek.`, "danger");
+      }}
+      onSendEnforcer={(debt) => {
+        pushCommand(
+          "SEND_ENFORCER",
+          debt.traderId,
+          `Çırak ${debt.nickname}'in kapısına gönderildi!`,
+          { debt_id: debt.debtId, trader_id: debt.traderId }
+        );
+        addToast(
+          "Çırak Yola Çıktı",
+          `${debt.nickname} korku moduna girdi (3 işlem 1/2 kaldıraç).`,
+          "gold"
+        );
+      }}
+      onCollectDebt={(debt) => {
+        const amount =
+          Math.round(Math.min(debt.traderBalance * 0.5, debt.owedUsdt) * 100) / 100;
+        pushCommand(
+          "COLLECT_DEBT",
+          debt.traderId,
+          `${debt.nickname} hesabından $${amount.toFixed(2)} tahsilat emri!`,
+          { debt_id: debt.debtId, amount }
+        );
+        addToast(
+          "Tahsilat Emri",
+          `${debt.nickname} kasasından $${amount.toFixed(2)} çekiliyor.`,
+          "success"
+        );
+      }}
+    />
+  );
+
+  const liquidationBanner = (
+    <LiquidationShow
+      items={liquidations}
+      cumulativeUsdt={liqStats.cumulativeUsdt}
+      eventCount={liqStats.eventCount}
+      impactCount={liqStats.impactCount}
+      whaleCount={liqStats.whaleCount}
+      binanceConnected={binanceConnected}
+      shakeOn={shakeOn}
+      sfxOn={sfxOn}
+      onToggleShake={handleToggleShake}
+      onToggleSfx={handleToggleSfx}
+    />
+  );
+
+  const livePnlSection = (
+    <LivePnL
+      positions={openPositions}
+      livePrices={livePrices}
+      binanceConnected={binanceConnected}
+      onForceClose={(pos) => {
+        playClick();
+        pushCommand(
+          "FORCE_CLOSE",
+          pos.traderId,
+          `${pos.nickname} ${pos.symbol} pozisyonu Tefeci emriyle kapatılıyor!`,
+          { position_id: pos.positionId }
+        );
+        addToast(
+          "Zorla Kapatma",
+          `${pos.nickname} · ${pos.symbol} canlı piyasa fiyatından kapatılıyor.`,
+          "gold"
+        );
+      }}
+      onTriggerPulse={() => handleTriggerPulse()}
+    />
+  );
+
+  const traderRosterSection = (
+    <TraderRoster
+      traders={traders}
+      debts={debtRows}
+      openPnlByTrader={openPnlByTrader}
+      openCountByTrader={openCountByTrader}
+      flashingTraderIds={flashingTraderIds}
+      onOpenLoanFor={(tid) => {
+        playClick();
+        setLoanModalTrader(tid);
+        setLoanModalOpen(true);
+      }}
+      onSendEnforcerTo={(tid, nickname) => {
+        playEnforcerKnock();
+        speakAs("tefeci", `Çırağı ${nickname}'in kapısına saldım!`);
+        pushCommand("SEND_ENFORCER", tid, `Çırak ${nickname}'in kapısına gönderildi!`, {
+          trader_id: tid,
+        });
+        addToast("Çırak Gönderildi", `${nickname} korku moduna geçiyor!`, "gold");
+      }}
+      onTriggerTradeFor={(tid, nickname) => handleTriggerPulse(tid, nickname)}
+      onCollectFromTrader={handleCollectFromTrader}
+    />
+  );
+
   return (
-    <div className="min-h-screen pb-14 text-zinc-100">
+    <div
+      className={`min-h-screen overflow-x-clip pb-24 text-zinc-100 lg:pb-12 ${
+        microShakeActive ? "liq-micro-shake" : ""
+      }`}
+    >
       {/* 0.5-Second Blood-Red Whale Alert Flash Overlay */}
       {whaleFlashKey > 0 && (
         <div
           key={whaleFlashKey}
-          className="whale-flash pointer-events-none fixed inset-0 z-50 border-[12px] border-red-500 bg-red-700/65"
+          className="whale-flash pointer-events-none fixed inset-0 z-50 border-[10px] border-red-500 bg-red-700/60"
         />
       )}
 
@@ -516,8 +887,8 @@ export default function App() {
         />
       )}
 
-      {/* Floating Dopamine Toast Stack */}
-      <div className="pointer-events-none fixed right-4 bottom-4 z-40 flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
+      {/* Floating Dopamine Toast Stack (positioned above mobile bottom nav) */}
+      <div className="pointer-events-none fixed right-3 bottom-20 z-40 flex w-80 max-w-[calc(100vw-1.5rem)] flex-col gap-2 lg:right-4 lg:bottom-4">
         {toasts.map((toast) => (
           <div
             key={toast.id}
@@ -531,7 +902,7 @@ export default function App() {
                 : "border-zinc-700 bg-zinc-900/95 text-zinc-100"
             }`}
           >
-            <div className="flex items-center gap-1.5 font-display text-xs font-black uppercase">
+            <div className="font-display flex items-center gap-1.5 text-xs font-black uppercase">
               {toast.tone === "danger" ? (
                 <Skull className="h-3.5 w-3.5 text-red-400" />
               ) : (
@@ -551,164 +922,191 @@ export default function App() {
         workerHealthy={workerHealthy}
         sfxOn={sfxOn}
         ttsOn={ttsOn}
-        onToggleSfx={() => {
-          const next = !sfxOn;
-          setSfxOn(next);
-          setSfxEnabled(next);
-          if (next) playClick();
+        hapticsOn={hapticsOn}
+        shakeOn={shakeOn}
+        activeTab={activeTab}
+        onSelectTab={(tab) => {
+          setActiveTab(tab);
+          window.scrollTo({ top: 0, behavior: "smooth" });
         }}
-        onToggleTts={() => {
-          const next = !ttsOn;
-          setTtsOn(next);
-          setTtsEnabled(next);
-          playClick();
-        }}
+        onToggleSfx={handleToggleSfx}
+        onToggleTts={handleToggleTts}
+        onToggleHaptics={handleToggleHaptics}
+        onToggleShake={handleToggleShake}
         onOpenLoanModal={() => {
           playClick();
           setLoanModalOpen(true);
         }}
         onTriggerPulse={() => handleTriggerPulse()}
-        onSimulateWhale={handleSimulateWhale}
         triggerBusy={triggerBusy}
       />
 
-      <main className="mx-auto max-w-[1440px] space-y-6 px-4 pt-5 sm:px-6">
-        {/* Top 4 KPI Cards */}
-        <KpiBar
-          tefeciProfit={tefeciProfit}
-          totalOwed={totalOwed}
-          overdueCount={overdueCount}
-          liveUnrealizedPnl={totalUnrealizedPnl}
-          openPositionCount={openPositions.length}
-          totalLiquidations={totalLiquidations}
-          totalCollected={totalCollected}
-        />
+      <main className="mx-auto max-w-[1440px] space-y-5 px-3 pt-4 sm:px-6 sm:pt-5">
+        {/* Global Whale Panic shortcut banner if user is on Traders tab */}
+        {whalePanicActive && activeTab === "traders" && darkPatternDesk}
 
-        {/* Equity Curve + Live Notification Center */}
-        <section className="grid gap-4 lg:grid-cols-12">
-          <div className="lg:col-span-8">
-            <LiveEquityChart
-              snapshots={snapshots}
-              livePoint={{
-                tefeci_profit: tefeciProfit,
-                total_debt_owed: totalOwed,
-                total_trader_equity: totalTraderEquity,
-                total_unrealized_pnl: totalUnrealizedPnl,
-              }}
+        {/* TAB 1: PİYASA (Market) */}
+        {activeTab === "market" && (
+          <>
+            {liquidationBanner}
+
+            <KpiBar
+              tefeciProfit={tefeciProfit}
+              totalOwed={totalOwed}
+              overdueCount={overdueCount}
+              liveUnrealizedPnl={totalUnrealizedPnl}
+              openPositionCount={openPositions.length}
+              totalLiquidations={totalLiquidations}
+              totalCollected={totalCollected}
             />
-          </div>
-          <div className="lg:col-span-4">
+
+            {/* Keep DarkPatternAlerts prominent on Market */}
+            {darkPatternDesk}
+
+            {/* Equity Curve + Notification Feed */}
+            <section className="grid gap-4 lg:grid-cols-12">
+              <div className="min-w-0 lg:col-span-8">
+                <LiveEquityChart
+                  snapshots={snapshots}
+                  livePoint={{
+                    tefeci_profit: tefeciProfit,
+                    total_debt_owed: totalOwed,
+                    total_trader_equity: totalTraderEquity,
+                    total_unrealized_pnl: totalUnrealizedPnl,
+                  }}
+                />
+              </div>
+              <div className="min-w-0 lg:col-span-4">
+                <NotificationFeed events={events} />
+              </div>
+            </section>
+
+            {livePnlSection}
+
+            {/* Quick CTA to Fitil Avı on Market */}
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/35 bg-gradient-to-r from-amber-950/35 via-zinc-950 to-zinc-950 p-3.5 sm:p-4">
+              <div className="min-w-0">
+                <div className="font-display flex items-center gap-2 text-xs font-black tracking-wider text-amber-300 uppercase sm:text-sm">
+                  <Flame className="h-4 w-4 text-amber-400" />
+                  Fitil Avı · 10 Saniye Canlı Yön Tahmini
+                </div>
+                <p className="mt-0.5 text-xs text-zinc-400">
+                  1.000 sanal puanla canlı Binance fiyatında istikrar skoru kas, sıralamada yüksel.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  hapticShort();
+                  playClick();
+                  setActiveTab("fitil");
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                }}
+                className="min-h-[44px] cursor-pointer rounded-xl border border-amber-500/60 bg-amber-500/20 px-4 text-xs font-black tracking-wider text-amber-200 uppercase transition hover:bg-amber-500/30 active:scale-95"
+              >
+                Fitil Avına Geç
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* TAB 2: TRADERLAR (Traders) */}
+        {activeTab === "traders" && (
+          <>
+            {traderRosterSection}
+            {livePnlSection}
+          </>
+        )}
+
+        {/* TAB 3: FİTİL AVI (Mini-Game + Prominent DarkPatternAlerts + Live Liquidations) */}
+        {activeTab === "fitil" && (
+          <>
+            <FitilAvi
+              ticks={ticks}
+              binanceConnected={binanceConnected}
+              traders={traders}
+            />
+            {darkPatternDesk}
+            {liquidationBanner}
+          </>
+        )}
+
+        {/* TAB 4: SENETLER (DarkPatternAlerts + BottomSheet DebtLedger on mobile / inline on desktop) */}
+        {activeTab === "debts" && (
+          <>
+            {darkPatternDesk}
+
+            {/* Mobile Bottom-Sheet Drawer Trigger for DebtLedger */}
+            <section className="rounded-xl border border-rose-500/30 bg-zinc-950/90 p-4 shadow-xl lg:hidden">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="font-display flex items-center gap-2 text-sm font-black tracking-wider text-rose-400 uppercase">
+                    <BookOpen className="h-4 w-4 text-rose-500" />
+                    İntikam Defteri ({closedLedger.length})
+                  </h2>
+                  <p className="mt-0.5 text-xs text-zinc-400">
+                    Tüm kapanan pozisyonları, likidasyon kayıtlarını ve JSON/MD dışa aktarımını alt çekmecede aç.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    hapticShort();
+                    playClick();
+                    setLedgerSheetOpen(true);
+                  }}
+                  className="min-h-[48px] shrink-0 cursor-pointer rounded-xl border border-rose-500/60 bg-rose-950/60 px-4 text-xs font-black tracking-wider text-rose-100 uppercase transition hover:bg-rose-900/70 active:scale-95"
+                >
+                  Defteri Aç
+                </button>
+              </div>
+            </section>
+
+            {/* Full inline DebtLedger on Desktop */}
+            <div className="hidden lg:block">
+              <DebtLedger
+                entries={closedLedger}
+                onExportJson={handleExportLedgerJson}
+                onExportMarkdown={handleExportLedgerMd}
+              />
+            </div>
+
             <NotificationFeed events={events} />
-          </div>
-        </section>
-
-        {/* Urgent Debt / Dark Pattern Collection Desk */}
-        <DarkPatternAlerts
-          debts={urgentDebts}
-          whalePanicActive={whalePanicActive}
-          whaleBannerText={whaleBannerText}
-          onDoubleInterest={(debt) => {
-            pushCommand(
-              "DOUBLE_INTEREST",
-              debt.traderId,
-              `${debt.nickname} senet faizi 2'ye katlandı!`,
-              { debt_id: debt.debtId }
-            );
-            addToast("Faiz Katlandı!", `${debt.nickname} artık 2 katı faiz ödeyecek.`, "danger");
-          }}
-          onSendEnforcer={(debt) => {
-            pushCommand(
-              "SEND_ENFORCER",
-              debt.traderId,
-              `Çırak ${debt.nickname}'in kapısına gönderildi!`,
-              { debt_id: debt.debtId, trader_id: debt.traderId }
-            );
-            addToast("Çırak Yola Çıktı", `${debt.nickname} korku moduna girdi (3 işlem 1/2 kaldıraç).`, "gold");
-          }}
-          onCollectDebt={(debt) => {
-            const amount = Math.round(Math.min(debt.traderBalance * 0.5, debt.owedUsdt) * 100) / 100;
-            pushCommand(
-              "COLLECT_DEBT",
-              debt.traderId,
-              `${debt.nickname} hesabından $${amount.toFixed(2)} tahsilat emri!`,
-              { debt_id: debt.debtId, amount }
-            );
-            addToast("Tahsilat Emri", `${debt.nickname} kasasından $${amount.toFixed(2)} çekiliyor.`, "success");
-          }}
-        />
-
-        {/* 5 Live Trader Cards */}
-        <TraderRoster
-          traders={traders}
-          debts={debtRows}
-          openPnlByTrader={openPnlByTrader}
-          openCountByTrader={openCountByTrader}
-          onOpenLoanFor={(tid) => {
-            playClick();
-            setLoanModalTrader(tid);
-            setLoanModalOpen(true);
-          }}
-          onSendEnforcerTo={(tid, nickname) => {
-            playEnforcerKnock();
-            speakAs("tefeci", `Çırağı ${nickname}'in kapısına saldım!`);
-            pushCommand(
-              "SEND_ENFORCER",
-              tid,
-              `Çırak ${nickname}'in kapısına gönderildi!`,
-              { trader_id: tid }
-            );
-            addToast("Çırak Gönderildi", `${nickname} korku moduna geçiyor!`, "gold");
-          }}
-          onTriggerTradeFor={(tid, nickname) => handleTriggerPulse(tid, nickname)}
-        />
-
-        {/* Millisecond Live Open Positions */}
-        <LivePnL
-          positions={openPositions}
-          livePrices={livePrices}
-          onForceClose={(pos) => {
-            playClick();
-            pushCommand(
-              "FORCE_CLOSE",
-              pos.traderId,
-              `${pos.nickname} ${pos.symbol} pozisyonu Tefeci emriyle kapatılıyor!`,
-              { position_id: pos.positionId }
-            );
-            addToast("Zorla Kapatma", `${pos.nickname} · ${pos.symbol} piyasa fiyatından kapatılıyor.`, "gold");
-          }}
-          onTriggerPulse={() => handleTriggerPulse()}
-        />
-
-        {/* Filterable Revenge Ledger */}
-        <DebtLedger
-          entries={closedLedger}
-          onExportJson={(rows) => {
-            playClick();
-            downloadFile(
-              "tefeci-intikam-defteri.json",
-              JSON.stringify(rows, null, 2),
-              "application/json"
-            );
-          }}
-          onExportMarkdown={(rows) => {
-            playClick();
-            const md = [
-              "# TEFECİ İNTİKAM DEFTERİ — FAZ 2 RAPORU",
-              "",
-              `Toplam Kayıt: **${rows.length}**`,
-              "",
-              "| Trader | Coin | Giriş → Çıkış | Net PnL | Giriş Nedeni | Çıkış / Batış Nedeni |",
-              "|---|---|---|---:|---|---|",
-              ...rows.map(
-                (l) =>
-                  `| ${l.nickname} | ${l.symbol} ${l.side} ${l.leverage}x | $${l.entryPrice.toFixed(2)} → ${l.exitPrice ? `$${l.exitPrice.toFixed(2)}` : "-"} | ${l.netPnl >= 0 ? "+" : ""}${l.netPnl.toFixed(2)}$ | ${l.reasonEntry} | ${l.reasonExit} |`
-              ),
-            ].join("\n");
-            downloadFile("tefeci-zarar-raporu.md", md, "text/markdown");
-          }}
-        />
+          </>
+        )}
       </main>
 
+      {/* Mobile Fixed Bottom Navigation (Hayri) */}
+      <BottomNav
+        activeTab={activeTab}
+        onSelectTab={(tab) => {
+          setActiveTab(tab);
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        }}
+        openPositionCount={openPositions.length}
+        overdueDebtCount={overdueCount}
+        whalePanicActive={whalePanicActive}
+      />
+
+      {/* Mobile Bottom-Sheet DebtLedger Drawer (Hayri) */}
+      <BottomSheet
+        open={ledgerSheetOpen}
+        title="İntikam Defteri (The Ledger)"
+        subtitle={`${closedLedger.length} kapanan işlem kaydı`}
+        icon={<BookOpen className="h-5 w-5 text-rose-400" />}
+        accentClass="border-rose-500/40"
+        maxWidthClass="sm:max-w-3xl"
+        onClose={() => setLedgerSheetOpen(false)}
+      >
+        <DebtLedger
+          embedded
+          entries={closedLedger}
+          onExportJson={handleExportLedgerJson}
+          onExportMarkdown={handleExportLedgerMd}
+        />
+      </BottomSheet>
+
+      {/* Bottom-Sheet Loan Modal (Hayri) */}
       <LoanModal
         open={loanModalOpen}
         traders={traders}

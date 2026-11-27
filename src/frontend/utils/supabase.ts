@@ -90,9 +90,18 @@ export interface EquitySnapshotRow {
 }
 
 let client: SupabaseClient | null = null;
+let channelSeq = 0;
 
 export function isSupabaseConfigured(): boolean {
   return Boolean(supabaseUrl && supabaseAnonKey);
+}
+
+/** Live Frankfurt Supabase Edge Worker /health endpoint (falls back to local /health proxy). */
+export function getCloudWorkerHealthUrl(): string {
+  if (supabaseUrl) {
+    return `${supabaseUrl.replace(/\/+$/, "")}/functions/v1/tefeci-worker/health`;
+  }
+  return "/health";
 }
 
 export function getSupabase(): SupabaseClient | null {
@@ -143,8 +152,9 @@ export function subscribeTable<T>(
 
   fetchAll();
 
+  channelSeq += 1;
   const channel = sb
-    .channel(`public:${table}:${Math.random().toString(36).slice(2, 8)}`)
+    .channel(`public:${table}:${channelSeq}`)
     .on(
       "postgres_changes",
       { event: "*", schema: "public", table },
@@ -172,8 +182,7 @@ export type CommandType =
   | "COLLECT_DEBT"
   | "ISSUE_DEBT"
   | "FORCE_CLOSE"
-  | "TRIGGER_TEST_TRADE"
-  | "SIMULATE_WHALE";
+  | "TRIGGER_TEST_TRADE";
 
 export async function pushCommand(
   type: CommandType,

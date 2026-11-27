@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import random
 import signal
 import time
 import uuid
@@ -78,6 +77,29 @@ def _load_dotenv() -> None:
 
 WHALE_LIQ_THRESHOLD_USDT = 1_000_000.0
 WHALE_COOLDOWN_S = 15.0
+
+
+def determine_orderbook_side(symbol: str, feed: BinanceFuturesFeed) -> tuple[str, float]:
+    """Deterministically choose LONG/SHORT from live Binance orderbook imbalance (OBI).
+
+    Uses top-of-book depth volume when available, falling back to bookTicker bid_qty vs ask_qty.
+    Returns (side, imbalance) where imbalance is in [-1.0, +1.0]. Never uses randomness.
+    """
+    depth = feed.latest_depth.get(symbol)
+    bid_vol = sum(qty for _, qty in depth.bids[:5]) if depth and depth.bids else 0.0
+    ask_vol = sum(qty for _, qty in depth.asks[:5]) if depth and depth.asks else 0.0
+
+    if bid_vol <= 0.0 and ask_vol <= 0.0:
+        book = feed.latest_book.get(symbol)
+        if book is not None:
+            bid_vol = max(0.0, book.bid_qty)
+            ask_vol = max(0.0, book.ask_qty)
+
+    total = bid_vol + ask_vol
+    imbalance = ((bid_vol - ask_vol) / total) if total > 0.0 else 0.0
+    side = "LONG" if imbalance >= 0.0 else "SHORT"
+    return side, round(imbalance, 4)
+
 
 INITIAL_DEBT_PROFILES: Dict[str, Dict[str, Any]] = {
     "selo": {"principal": 1200.0, "rate": 0.12, "period_s": 90, "duration_s": 210},
@@ -594,24 +616,38 @@ class TefeciWorker:
 
             elif ev_type == "TRIGGER_TEST_TRADE":
                 target_id = trader_id or str(payload.get("trader_id") or "")
-                candidates = [self.trader_map[target_id]] if target_id in self.trader_map else list(self.traders)
-                random.shuffle(candidates)
+                candidates = (
+                    [self.trader_map[target_id]]
+                    if target_id in self.trader_map
+                    else sorted(
+                        self.traders,
+                        key=lambda t: self.balances.get(t.trader_id, 0.0),
+                        reverse=True,
+                    )
+                )
                 sym = str(payload.get("symbol") or "").upper()
                 available_syms = list(self.feed.latest_book.keys())
                 if not sym or sym not in available_syms:
-                    sym = random.choice(available_syms) if available_syms else "BTCUSDT"
+                    if available_syms:
+                        # Pick the symbol with the strongest live orderbook imbalance deterministically
+                        sym = max(
+                            available_syms,
+                            key=lambda s: abs(determine_orderbook_side(s, self.feed)[1]),
+                        )
+                    else:
+                        sym = "BTCUSDT"
                 book = self.feed.latest_book.get(sym)
                 if book is not None:
                     mid = (book.bid_price + book.ask_price) / 2.0
+                    live_side, obi = determine_orderbook_side(sym, self.feed)
                     for cand in candidates:
                         already_open = any(
                             p.trader_id == cand.trader_id and p.symbol == sym for p in self.positions.values()
                         )
                         if already_open or self.balances.get(cand.trader_id, 0.0) < 50.0:
                             continue
-                        side = str(payload.get("side") or random.choice(["LONG", "SHORT"])).upper()
-                        if side not in ("LONG", "SHORT"):
-                            side = "LONG"
+                        explicit_side = str(payload.get("side") or "").upper()
+                        side = explicit_side if explicit_side in ("LONG", "SHORT") else live_side
                         lev = cand.adjust_leverage(cand.base_leverage)
                         sl = round(mid * (0.996 if side == "LONG" else 1.004), 2)
                         tp = round(mid * (1.005 if side == "LONG" else 0.995), 2)
@@ -623,8 +659,8 @@ class TefeciWorker:
                             margin_fraction=0.25,
                             stop_loss=sl,
                             take_profit=tp,
-                            reason=f"Mahalle baskısı & canlı {sym} momentum girişi",
-                            signal_snapshot={"mid": mid, "triggered": "manual_pulse"},
+                            reason=f"Canlı emir defteri dengesi (OBI={obi:+.2f}) — {sym} momentum girişi",
+                            signal_snapshot={"mid": mid, "obi": obi, "triggered": "manual_pulse"},
                         )
                         await self.execute_order(sig)
                         break
