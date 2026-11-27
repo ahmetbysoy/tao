@@ -6,6 +6,9 @@ import { PriceTick, TerminalHeader } from "./components/TerminalHeader";
 import { BottomNav, NavTab } from "./components/BottomNav";
 import { BottomSheet } from "./components/BottomSheet";
 import { LiquidationShow } from "./components/LiquidationShow";
+import { LiveQuotesTicker } from "./components/LiveQuotesTicker";
+import { DebtEndurancePanel } from "./components/DebtEndurancePanel";
+import { MahalleKupasi } from "./components/MahalleKupasi";
 import { FitilAvi } from "./components/FitilAvi";
 import { KpiBar } from "./components/KpiBar";
 import { LiveEquityChart } from "./components/LiveEquityChart";
@@ -15,6 +18,20 @@ import { LivePnL, OpenPosition } from "./components/LivePnL";
 import { NotificationFeed } from "./components/NotificationFeed";
 import { DebtLedger, LedgerEntry } from "./components/DebtLedger";
 import { LoanModal } from "./components/LoanModal";
+import { computeDebtEndurance } from "./utils/debtEndurance";
+import { FitilStats, loadFitilStats } from "./utils/fitilScoring";
+import {
+  evaluateDebtPressureQuote,
+  evaluateLiquidationQuote,
+  evaluateMomentumQuote,
+  LiveMarketQuote,
+} from "./utils/liveQuotes";
+import {
+  ActiveCupSession,
+  loadSavedCupSession,
+  readCupCodeFromUrl,
+  syncCupParticipantStats,
+} from "./utils/mahalleKupasi";
 import {
   DebtRow,
   EquitySnapshotRow,
@@ -87,8 +104,11 @@ const BINANCE_MARKET_WSS =
   "wss://fstream.binance.com/market/stream?streams=!forceOrder@arr";
 
 export default function App() {
+  const initialInviteCupCode = useMemo(() => readCupCodeFromUrl(), []);
   const [entered, setEntered] = useState(false);
-  const [activeTab, setActiveTab] = useState<NavTab>("market");
+  const [activeTab, setActiveTab] = useState<NavTab>(() =>
+    initialInviteCupCode ? "fitil" : "market"
+  );
 
   const [ticks, setTicks] = useState<Record<string, PriceTick>>({});
   const [binanceConnected, setBinanceConnected] = useState(false);
@@ -111,6 +131,14 @@ export default function App() {
   });
   const [microShakeActive, setMicroShakeActive] = useState(false);
   const [flashingTraderIds, setFlashingTraderIds] = useState<Record<string, number>>({});
+
+  // Tur 2: Tuncay Live Quotes + Bülent Mahalle Kupası state
+  const [liveQuotes, setLiveQuotes] = useState<LiveMarketQuote[]>([]);
+  const [cupSession, setCupSession] = useState<ActiveCupSession | null>(() =>
+    loadSavedCupSession()
+  );
+  const [fitilStats, setFitilStats] = useState<FitilStats>(() => loadFitilStats());
+  const cancelledRoundsRef = useRef<number>(0);
 
   // Controls & settings (Hayri + Ece)
   const [sfxOn, setSfxOn] = useState<boolean>(() => isSfxEnabled());
@@ -137,6 +165,11 @@ export default function App() {
   const shakeOnRef = useRef<boolean>(shakeOn);
   shakeOnRef.current = shakeOn;
   const openPositionsRef = useRef<OpenPosition[]>([]);
+  const lastQuoteMsRef = useRef<number>(0);
+  const lastDebtQuoteByTraderRef = useRef<Record<string, number>>({});
+  const momentumAnchorRef = useRef<Record<string, { price: number; tsMs: number }>>({});
+  const cupSessionRef = useRef<ActiveCupSession | null>(cupSession);
+  cupSessionRef.current = cupSession;
 
   const lastSeenEventIdRef = useRef<number>(0);
   const initializedEventsRef = useRef<boolean>(false);
@@ -245,6 +278,32 @@ export default function App() {
                 updatedAtMs: now,
               },
             }));
+
+            // Tuncay: 15-second live bookTicker momentum quote detector (zero randomness)
+            const anchor = momentumAnchorRef.current[d.s];
+            if (!anchor) {
+              momentumAnchorRef.current[d.s] = { price: mid, tsMs: now };
+            } else {
+              const pctChange = ((mid - anchor.price) / anchor.price) * 100;
+              if (Math.abs(pctChange) >= 0.12) {
+                const quote = evaluateMomentumQuote({
+                  symbol: d.s,
+                  livePrice: mid,
+                  pctChange15s: pctChange,
+                  connected: true,
+                  lastTickAgeMs: 0,
+                  nowMs: now,
+                  lastQuoteMs: lastQuoteMsRef.current,
+                });
+                if (quote) {
+                  lastQuoteMsRef.current = now;
+                  setLiveQuotes((prev) => [quote, ...prev].slice(0, 15));
+                }
+                momentumAnchorRef.current[d.s] = { price: mid, tsMs: now };
+              } else if (now - anchor.tsMs >= 15_000) {
+                momentumAnchorRef.current[d.s] = { price: mid, tsMs: now };
+              }
+            }
           }
         } catch {
           // Ignore malformed WS frame
@@ -284,6 +343,21 @@ export default function App() {
                 prev.impactCount + (item.tier === "impact" || item.tier === "whale" ? 1 : 0),
               whaleCount: prev.whaleCount + (item.tier === "whale" ? 1 : 0),
             }));
+
+            // Tuncay: Real !forceOrder@arr liquidation quote trigger
+            const liqNow = Date.now();
+            const liqQuote = evaluateLiquidationQuote({
+              symbol: item.symbol,
+              liquidatedSide: item.liquidatedSide,
+              notionalUsdt: item.notionalUsdt,
+              price: item.price,
+              nowMs: liqNow,
+              lastQuoteMs: lastQuoteMsRef.current,
+            });
+            if (liqQuote) {
+              lastQuoteMsRef.current = liqNow;
+              setLiveQuotes((prev) => [liqQuote, ...prev].slice(0, 15));
+            }
 
             if (!enteredRef.current) return;
 
@@ -746,12 +820,79 @@ export default function App() {
     downloadFile("tefeci-zarar-raporu.md", md, "text/markdown");
   };
 
+  // Tuncay + Rıza: Real active debt-pressure quote check every 20s (zero randomness)
+  useEffect(() => {
+    if (!entered) return;
+    const checkDebtQuotes = () => {
+      const now = Date.now();
+      for (const d of debtRows) {
+        if (d.status !== "aktif" && d.status !== "gecikti") continue;
+        const lastForTrader = lastDebtQuoteByTraderRef.current[d.trader_id] ?? 0;
+        if (now - lastForTrader < 60_000) continue;
+
+        const trader = traderMap[d.trader_id];
+        const createdAtMs = d.created_at
+          ? Date.parse(d.created_at) || d.due_date_ms - 600_000
+          : d.due_date_ms - 600_000;
+        const traderEquity = Math.max(
+          0,
+          Number(trader?.balance ?? 0) + Number(openPnlByTrader[d.trader_id] ?? 0)
+        );
+        const endurance = computeDebtEndurance({
+          principal: Number(d.principal),
+          totalRepaid: Number(d.total_repaid ?? 0),
+          interestRate: Number(d.interest_rate ?? 0.08),
+          compoundingPeriodS: Number(d.compounding_period_s ?? 300),
+          createdAtMs,
+          dueDateMs: Number(d.due_date_ms),
+          nowMs: now,
+          traderEquity,
+          enforcerCount: Number(d.enforcer_count ?? 0),
+          status: d.status,
+        });
+        const q = evaluateDebtPressureQuote({
+          nickname: trader?.nickname ?? TRADER_NAMES[d.trader_id] ?? d.trader_id,
+          endurance,
+          nowMs: now,
+          lastQuoteMs: lastQuoteMsRef.current,
+        });
+        if (q) {
+          lastQuoteMsRef.current = now;
+          lastDebtQuoteByTraderRef.current[d.trader_id] = now;
+          setLiveQuotes((prev) => [q, ...prev].slice(0, 15));
+          break;
+        }
+      }
+    };
+    const timer = window.setInterval(checkDebtQuotes, 20_000);
+    return () => window.clearInterval(timer);
+  }, [entered, debtRows, traderMap, openPnlByTrader]);
+
+  // Bülent: Automatically sync Fitil Avı settled stats into active Mahalle Kupası
+  const handleFitilStatsChange = useCallback((nextStats: FitilStats) => {
+    setFitilStats(nextStats);
+    const activeCup = cupSessionRef.current;
+    if (activeCup) {
+      syncCupParticipantStats({
+        cupCode: activeCup.code,
+        nickname: activeCup.nickname,
+        stats: nextStats,
+        cancelledCount: cancelledRoundsRef.current,
+      });
+    }
+  }, []);
+
+  const handleFitilRoundCancelled = useCallback(() => {
+    cancelledRoundsRef.current += 1;
+  }, []);
+
   if (!entered) {
     return (
       <HeroGate
         livePrices={livePrices}
         binanceConnected={binanceConnected}
         supabaseReady={isSupabaseConfigured()}
+        inviteCupCode={initialInviteCupCode}
         onEnter={handleEnterNeighborhood}
       />
     );
@@ -950,6 +1091,12 @@ export default function App() {
           <>
             {liquidationBanner}
 
+            <LiveQuotesTicker
+              quotes={liveQuotes}
+              binanceConnected={binanceConnected}
+              ttsOn={ttsOn}
+            />
+
             <KpiBar
               tefeciProfit={tefeciProfit}
               totalOwed={totalOwed}
@@ -962,6 +1109,13 @@ export default function App() {
 
             {/* Keep DarkPatternAlerts prominent on Market */}
             {darkPatternDesk}
+
+            {/* Rıza: Live Debt Endurance Timers */}
+            <DebtEndurancePanel
+              debts={debtRows}
+              traders={traders}
+              openPnlByTrader={openPnlByTrader}
+            />
 
             {/* Equity Curve + Notification Feed */}
             <section className="grid gap-4 lg:grid-cols-12">
@@ -983,15 +1137,15 @@ export default function App() {
 
             {livePnlSection}
 
-            {/* Quick CTA to Fitil Avı on Market */}
+            {/* Quick CTA to Fitil Avı & Mahalle Kupası on Market */}
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/35 bg-gradient-to-r from-amber-950/35 via-zinc-950 to-zinc-950 p-3.5 sm:p-4">
               <div className="min-w-0">
                 <div className="font-display flex items-center gap-2 text-xs font-black tracking-wider text-amber-300 uppercase sm:text-sm">
                   <Flame className="h-4 w-4 text-amber-400" />
-                  Fitil Avı · 10 Saniye Canlı Yön Tahmini
+                  Fitil Avı &amp; Mahalle Kupası · Davet Koduyla Yarış
                 </div>
                 <p className="mt-0.5 text-xs text-zinc-400">
-                  1.000 sanal puanla canlı Binance fiyatında istikrar skoru kas, sıralamada yüksel.
+                  1.000 sanal puanla canlı Binance fiyatında istikrar skoru kas, davet koduyla arkadaşlarını kupaya çağır.
                 </p>
               </div>
               <button
@@ -1004,7 +1158,7 @@ export default function App() {
                 }}
                 className="min-h-[44px] cursor-pointer rounded-xl border border-amber-500/60 bg-amber-500/20 px-4 text-xs font-black tracking-wider text-amber-200 uppercase transition hover:bg-amber-500/30 active:scale-95"
               >
-                Fitil Avına Geç
+                Kupaya &amp; Fitil Avına Geç
               </button>
             </div>
           </>
@@ -1013,28 +1167,48 @@ export default function App() {
         {/* TAB 2: TRADERLAR (Traders) */}
         {activeTab === "traders" && (
           <>
+            <LiveQuotesTicker
+              quotes={liveQuotes}
+              binanceConnected={binanceConnected}
+              ttsOn={ttsOn}
+            />
             {traderRosterSection}
             {livePnlSection}
           </>
         )}
 
-        {/* TAB 3: FİTİL AVI (Mini-Game + Prominent DarkPatternAlerts + Live Liquidations) */}
+        {/* TAB 3: FİTİL AVI & MAHALLE KUPASI */}
         {activeTab === "fitil" && (
           <>
+            <MahalleKupasi
+              activeSession={cupSession}
+              initialInviteCode={initialInviteCupCode}
+              currentFitilStats={fitilStats}
+              onSessionChange={setCupSession}
+              onNotify={addToast}
+            />
             <FitilAvi
               ticks={ticks}
               binanceConnected={binanceConnected}
               traders={traders}
+              onStatsChange={handleFitilStatsChange}
+              onRoundCancelled={handleFitilRoundCancelled}
             />
             {darkPatternDesk}
             {liquidationBanner}
           </>
         )}
 
-        {/* TAB 4: SENETLER (DarkPatternAlerts + BottomSheet DebtLedger on mobile / inline on desktop) */}
+        {/* TAB 4: SENETLER (DarkPatternAlerts + DebtEndurance + BottomSheet DebtLedger) */}
         {activeTab === "debts" && (
           <>
             {darkPatternDesk}
+
+            <DebtEndurancePanel
+              debts={debtRows}
+              traders={traders}
+              openPnlByTrader={openPnlByTrader}
+            />
 
             {/* Mobile Bottom-Sheet Drawer Trigger for DebtLedger */}
             <section className="rounded-xl border border-rose-500/30 bg-zinc-950/90 p-4 shadow-xl lg:hidden">

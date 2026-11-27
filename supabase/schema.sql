@@ -118,6 +118,54 @@ alter table public.traders replica identity full;
 alter table public.debts replica identity full;
 alter table public.positions replica identity full;
 alter table public.events replica identity full;
+
+-- ============================================================================
+-- TUR 2: Bülent — Mahalle Kupası (Invite-Code Rooms without User Login)
+-- ============================================================================
+create table if not exists public.cups (
+  code text primary key check (code ~ '^[A-Z0-9]{6,10}$'),
+  title text not null check (char_length(trim(title)) between 2 and 48),
+  host_name text not null check (char_length(trim(host_name)) between 2 and 24),
+  duration_minutes integer not null default 30 check (duration_minutes in (15, 30, 60, 1440)),
+  ends_at_ms bigint not null,
+  status text not null default 'active' check (status in ('active', 'ended')),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.cup_participants (
+  id text primary key,
+  cup_code text not null references public.cups(code) on delete cascade,
+  client_id text not null check (char_length(client_id) between 6 and 64),
+  nickname text not null check (char_length(trim(nickname)) between 2 and 24),
+  points double precision not null default 1000 check (points >= 0 and points <= 10000000),
+  wins integer not null default 0 check (wins >= 0),
+  losses integer not null default 0 check (losses >= 0),
+  streak integer not null default 0 check (streak >= 0),
+  best_streak integer not null default 0 check (best_streak >= 0),
+  discipline_multiplier double precision not null default 1.0 check (discipline_multiplier >= 0.5 and discipline_multiplier <= 1.4),
+  consistency_score integer not null default 0 check (consistency_score >= 0 and consistency_score <= 3000),
+  cancelled_rounds integer not null default 0 check (cancelled_rounds >= 0),
+  joined_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_cup_participants_cup_score
+  on public.cup_participants (cup_code, consistency_score desc, updated_at asc);
+
+alter table public.cups enable row level security;
+alter table public.cup_participants enable row level security;
+
+create policy "public_read_cups" on public.cups for select to anon, authenticated using (true);
+create policy "public_insert_cups" on public.cups for insert to anon, authenticated
+  with check (code ~ '^[A-Z0-9]{6,10}$' and status = 'active' and ends_at_ms > 0);
+create policy "public_read_cup_participants" on public.cup_participants for select to anon, authenticated using (true);
+create policy "public_insert_cup_participants" on public.cup_participants for insert to anon, authenticated
+  with check (id = cup_code || '_' || client_id and points >= 0 and consistency_score between 0 and 3000);
+create policy "public_update_cup_participants" on public.cup_participants for update to anon, authenticated
+  using (true) with check (id = cup_code || '_' || client_id and points >= 0 and consistency_score between 0 and 3000);
+
+alter table public.cups replica identity full;
+alter table public.cup_participants replica identity full;
 alter table public.equity_snapshots replica identity full;
 
 alter publication supabase_realtime add table public.traders;

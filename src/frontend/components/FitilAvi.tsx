@@ -36,6 +36,8 @@ interface FitilAviProps {
   ticks: Record<string, PriceTick>;
   binanceConnected: boolean;
   traders: TraderRow[];
+  onStatsChange?: (stats: FitilStats) => void;
+  onRoundCancelled?: () => void;
 }
 
 interface ActiveRound {
@@ -57,6 +59,8 @@ export const FitilAvi: React.FC<FitilAviProps> = ({
   ticks,
   binanceConnected,
   traders,
+  onStatsChange,
+  onRoundCancelled,
 }) => {
   const [symbol, setSymbol] = useState<FitilSymbol>("BTCUSDT");
   const [stake, setStake] = useState<number>(100);
@@ -75,8 +79,14 @@ export const FitilAvi: React.FC<FitilAviProps> = ({
   const statsRef = useRef(stats);
   statsRef.current = stats;
 
+  const onStatsChangeRef = useRef(onStatsChange);
+  onStatsChangeRef.current = onStatsChange;
+  const onRoundCancelledRef = useRef(onRoundCancelled);
+  onRoundCancelledRef.current = onRoundCancelled;
+
   useEffect(() => {
     saveFitilStats(stats);
+    onStatsChangeRef.current?.(stats);
   }, [stats]);
 
   // 100ms UI timer for countdown & cooldown & freshness checks
@@ -121,6 +131,7 @@ export const FitilAvi: React.FC<FitilAviProps> = ({
         direction: activeRound.direction,
       });
       setActiveRound(null);
+      onRoundCancelledRef.current?.();
       hapticShort();
       playWarningAlarm();
       return;

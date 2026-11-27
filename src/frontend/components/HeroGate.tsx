@@ -5,6 +5,7 @@ interface HeroGateProps {
   livePrices: Record<string, number>;
   binanceConnected: boolean;
   supabaseReady: boolean;
+  inviteCupCode?: string | null;
   onEnter: () => void;
 }
 
@@ -20,6 +21,7 @@ export const HeroGate: React.FC<HeroGateProps> = ({
   livePrices,
   binanceConnected,
   supabaseReady,
+  inviteCupCode,
   onEnter,
 }) => {
   return (
@@ -74,8 +76,17 @@ export const HeroGate: React.FC<HeroGateProps> = ({
         <div className="space-y-3">
           <div className="inline-flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[11px] font-bold tracking-[0.25em] text-amber-400 uppercase">
             <Flame className="h-3.5 w-3.5" />
-            TUR 1 // CANLI BINANCE TERMİNALİ
+            TUR 2 // CANLI BINANCE &amp; MAHALLE KUPASI
           </div>
+          {inviteCupCode && (
+            <div className="mx-auto max-w-md rounded-xl border border-cyan-500/50 bg-cyan-950/40 px-4 py-2.5 text-xs text-cyan-100 shadow-lg">
+              Davet Kodu Algılandı:{" "}
+              <strong className="font-mono tracking-widest text-cyan-300">
+                {inviteCupCode}
+              </strong>{" "}
+              — Giriş yaptığında Mahalle Kupası ekranı otomatik açılır (üyelik gerekmez).
+            </div>
+          )}
           <h1 className="font-display text-5xl font-black tracking-tight text-white uppercase sm:text-7xl">
             TEFECİ{" "}
             <span className="bg-gradient-to-r from-amber-400 via-orange-500 to-red-500 bg-clip-text text-transparent">
