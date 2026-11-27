@@ -1,33 +1,160 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-display: "Space Grotesk", system-ui, -apple-system, sans-serif;
+    --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: #050608;
+    background-image:
+      radial-gradient(circle at 15% 0%, rgba(220, 38, 38, 0.12), transparent 40%),
+      radial-gradient(circle at 85% 5%, rgba(245, 158, 11, 0.09), transparent 38%),
+      linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px);
+    background-size: 100% 100%, 100% 100%, 36px 36px, 36px 36px;
+    background-attachment: fixed;
+  }
+
+  h1, h2, h3, .font-display {
+    font-family: var(--font-display);
+  }
+
+  .font-mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
 @keyframes neonProfitGlow {
   0%, 100% {
-    box-shadow: 0 0 12px rgba(16, 185, 129, 0.35), inset 0 0 8px rgba(16, 185, 129, 0.15);
+    box-shadow: 0 0 14px rgba(16, 185, 129, 0.25), inset 0 0 10px rgba(16, 185, 129, 0.08);
   }
   50% {
-    box-shadow: 0 0 28px rgba(16, 185, 129, 0.7), inset 0 0 14px rgba(16, 185, 129, 0.3);
+    box-shadow: 0 0 28px rgba(16, 185, 129, 0.55), inset 0 0 16px rgba(16, 185, 129, 0.18);
   }
 }
 
 @keyframes bloodLossJitter {
   0%, 100% {
     transform: translate(0, 0);
-    box-shadow: 0 0 14px rgba(220, 38, 38, 0.45);
+    box-shadow: 0 0 16px rgba(220, 38, 38, 0.35), inset 0 0 10px rgba(220, 38, 38, 0.12);
   }
   25% {
-    transform: translate(-1px, 1px);
+    transform: translate(-0.8px, 0.6px);
   }
   50% {
-    transform: translate(1px, -1px);
-    box-shadow: 0 0 28px rgba(220, 38, 38, 0.85);
+    transform: translate(0.8px, -0.6px);
+    box-shadow: 0 0 30px rgba(220, 38, 38, 0.72), inset 0 0 16px rgba(220, 38, 38, 0.22);
   }
   75% {
-    transform: translate(-1px, -1px);
+    transform: translate(-0.6px, -0.6px);
+  }
+}
+
+@keyframes liqScreenFlash {
+  0% {
+    opacity: 0;
+  }
+  15% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes whaleBloodFlash {
+  0% {
+    opacity: 0;
+  }
+  18% {
+    opacity: 0.96;
+  }
+  55% {
+    opacity: 0.72;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes whaleHeartbeat {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 12px rgba(239, 68, 68, 0.75), 0 0 0 0 rgba(239, 68, 68, 0.75);
+  }
+  25% {
+    transform: scale(1.09);
+    box-shadow: 0 0 28px rgba(239, 68, 68, 1), 0 0 0 8px rgba(239, 68, 68, 0);
+  }
+  50% {
+    transform: scale(1.02);
+    box-shadow: 0 0 16px rgba(245, 158, 11, 0.9), 0 0 0 0 rgba(239, 68, 68, 0.65);
+  }
+  75% {
+    transform: scale(1.11);
+    box-shadow: 0 0 34px rgba(220, 38, 38, 1), 0 0 0 10px rgba(239, 68, 68, 0);
+  }
+}
+
+@keyframes pulseRing {
+  0% {
+    transform: scale(0.95);
+    opacity: 0.85;
+  }
+  70% {
+    transform: scale(1.8);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.8);
+    opacity: 0;
   }
 }
 
 .pnl-profit {
-  animation: neonProfitGlow 1.4s ease-in-out infinite;
+  animation: neonProfitGlow 1.8s ease-in-out infinite;
 }
 
 .pnl-loss {
-  animation: bloodLossJitter 0.25s linear infinite;
+  animation: bloodLossJitter 0.38s linear infinite;
+}
+
+.liq-flash {
+  animation: liqScreenFlash 1.2s ease-out forwards;
+}
+
+.whale-flash {
+  animation: whaleBloodFlash 0.5s ease-out forwards;
+}
+
+.whale-panic-btn {
+  animation: whaleHeartbeat 0.68s ease-in-out infinite;
+}
+
+.pulse-ring {
+  animation: pulseRing 1.8s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+}
+
+/* Crisp custom scrollbars for terminal panels */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #09090b;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3f3f46;
 }

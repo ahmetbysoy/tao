@@ -12,6 +12,8 @@ from src.backend.traders import BaseTrader, TradeSignal
 class TahtaKemal(BaseTrader):
     trader_id = "kemal"
     nickname = "Tahta Kemal"
+    archetype = "Emir Defteri Dengesizliği & Spoofing Dedektörü (20x)"
+    base_leverage = 20
 
     def __init__(self, obi_threshold: float = 0.75, spoofing_window_ms: int = 200) -> None:
         super().__init__()

@@ -11,6 +11,8 @@ from src.backend.traders import BaseTrader, TradeSignal
 class FitilciMehmet(BaseTrader):
     trader_id = "mehmet"
     nickname = "Fitilci Mehmet"
+    archetype = "Likidasyon Fitil Avcısı (50x)"
+    base_leverage = 50
 
     def __init__(self, min_liq_usdt: float = 50_000.0, max_leverage: int = 50) -> None:
         super().__init__()

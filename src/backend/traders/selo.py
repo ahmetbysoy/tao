@@ -12,6 +12,8 @@ from src.backend.traders import BaseTrader, TradeSignal
 class SeloRoket(BaseTrader):
     trader_id = "selo"
     nickname = "Selo Roket"
+    archetype = "75x Hacim Patlaması & Momentum Manyağı"
+    base_leverage = 75
 
     def __init__(self, min_trade_usdt: float = 10_000.0, streak_count: int = 5) -> None:
         super().__init__()

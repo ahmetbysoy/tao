@@ -1,36 +1,150 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { TraderVoiceId } from "./tts";
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL ?? "";
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY ?? "";
 
+export type TableName =
+  | "traders"
+  | "positions"
+  | "debts"
+  | "events"
+  | "equity_snapshots";
+
+export interface TraderRow {
+  id: TraderVoiceId;
+  nickname: string;
+  archetype: string;
+  balance: number;
+  initial_balance: number;
+  realized_pnl: number;
+  mood: "focused" | "greedy" | "panicked" | "busted" | string;
+  fear_trades_remaining: number;
+  max_leverage: number;
+  win_count: number;
+  loss_count: number;
+  liquidation_count: number;
+  last_signal: string;
+  updated_at?: string;
+}
+
+export interface DebtRow {
+  id: string;
+  trader_id: TraderVoiceId;
+  principal: number;
+  initial_principal: number;
+  interest_rate: number;
+  compounding_period_s: number;
+  due_date_ms: number;
+  status: "teklif" | "aktif" | "gecikti" | "patladı" | "ödendi" | string;
+  total_repaid: number;
+  enforcer_count: number;
+  created_at?: string;
+}
+
+export interface PositionRow {
+  id: string;
+  trader_id: TraderVoiceId;
+  symbol: string;
+  side: "LONG" | "SHORT";
+  leverage: number;
+  entry_price: number;
+  exit_price: number | null;
+  qty: number;
+  isolated_margin: number;
+  liquidation_price: number;
+  stop_loss: number | null;
+  take_profit: number | null;
+  entry_fee: number;
+  funding_paid: number;
+  pnl: number;
+  status: "open" | "closed" | "liquidated" | string;
+  reason_entry: string;
+  log_reason: string;
+  mood: string;
+  opened_at_ms: number;
+  closed_at_ms: number | null;
+  created_at?: string;
+}
+
+export interface EventRow {
+  id: number;
+  type: string;
+  trader_id: string | null;
+  payload: Record<string, unknown>;
+  message: string;
+  processed: boolean;
+  created_at: string;
+}
+
+export interface EquitySnapshotRow {
+  id: number;
+  ts_ms: number;
+  tefeci_profit: number;
+  total_debt_owed: number;
+  total_trader_equity: number;
+  total_unrealized_pnl: number;
+  btc_price: number;
+  eth_price: number;
+  created_at?: string;
+}
+
 let client: SupabaseClient | null = null;
+
+export function isSupabaseConfigured(): boolean {
+  return Boolean(supabaseUrl && supabaseAnonKey);
+}
 
 export function getSupabase(): SupabaseClient | null {
   if (!supabaseUrl || !supabaseAnonKey) {
     return null;
   }
   if (!client) {
-    client = createClient(supabaseUrl, supabaseAnonKey);
+    client = createClient(supabaseUrl, supabaseAnonKey, {
+      realtime: { params: { eventsPerSecond: 10 } },
+    });
   }
   return client;
 }
 
-export function subscribeTable<T extends Record<string, unknown>>(
-  table: "positions" | "debts" | "events",
-  onSnapshot: (rows: T[]) => void
+export function subscribeTable<T>(
+  table: TableName,
+  onSnapshot: (rows: T[]) => void,
+  options?: {
+    orderBy?: { column: string; ascending?: boolean };
+    limit?: number;
+    pollMs?: number;
+    onStatusChange?: (connected: boolean) => void;
+  }
 ): () => void {
   const sb = getSupabase();
-  if (!sb) return () => {};
+  if (!sb) {
+    options?.onStatusChange?.(false);
+    return () => {};
+  }
+
+  let active = true;
 
   const fetchAll = async () => {
-    const { data } = await sb.from(table).select("*");
-    if (data) onSnapshot(data as T[]);
+    let query = sb.from(table).select("*");
+    if (options?.orderBy) {
+      query = query.order(options.orderBy.column, {
+        ascending: options.orderBy.ascending ?? true,
+      });
+    }
+    if (options?.limit) {
+      query = query.limit(options.limit);
+    }
+    const { data, error } = await query;
+    if (!error && data && active) {
+      onSnapshot(data as T[]);
+    }
   };
 
   fetchAll();
 
   const channel = sb
-    .channel(`public:${table}`)
+    .channel(`public:${table}:${Math.random().toString(36).slice(2, 8)}`)
     .on(
       "postgres_changes",
       { event: "*", schema: "public", table },
@@ -38,19 +152,43 @@ export function subscribeTable<T extends Record<string, unknown>>(
         fetchAll();
       }
     )
-    .subscribe();
+    .subscribe((status) => {
+      options?.onStatusChange?.(status === "SUBSCRIBED");
+    });
+
+  // Resilient periodic fallback poll in case a corporate firewall drops WS frames
+  const pollInterval = window.setInterval(fetchAll, options?.pollMs ?? 5000);
 
   return () => {
+    active = false;
+    window.clearInterval(pollInterval);
     sb.removeChannel(channel);
   };
 }
 
-export async function pushDarkPatternEvent(
-  type: "DOUBLE_INTEREST" | "SEND_ENFORCER" | "COLLECT_DEBT",
+export type CommandType =
+  | "DOUBLE_INTEREST"
+  | "SEND_ENFORCER"
+  | "COLLECT_DEBT"
+  | "ISSUE_DEBT"
+  | "FORCE_CLOSE"
+  | "TRIGGER_TEST_TRADE"
+  | "SIMULATE_WHALE";
+
+export async function pushCommand(
+  type: CommandType,
   traderId: string,
-  message: string
-): Promise<void> {
+  message: string,
+  payload: Record<string, unknown> = {}
+): Promise<boolean> {
   const sb = getSupabase();
-  if (!sb) return;
-  await sb.from("events").insert({ type, trader_id: traderId, message });
+  if (!sb) return false;
+  const { error } = await sb.from("events").insert({
+    type,
+    trader_id: traderId,
+    message,
+    payload,
+    processed: false,
+  });
+  return !error;
 }

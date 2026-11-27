@@ -1,0 +1,98 @@
+name: RUTHLESS DEPLOY PIPELINE
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - arena/9e19e3a2-tao
+
+jobs:
+  quant-verify-and-build:
+    name: Quant Engine Verify & Dopamine UI Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Backend Dependencies
+        run: pip install --no-cache-dir -r requirements.txt
+
+      - name: Run Full Pytest Suite (Faz 1 + Faz 2 + Faz 3)
+        run: pytest -v
+
+      - name: Live Binance Futures WSS, Fear Mode & Whale Alert Verification
+        run: python -m scripts.pipeline_smoke_test
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install Frontend Dependencies
+        run: npm ci
+
+      - name: Build Dopamine UI Production Bundle
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: npm run build
+
+      - name: Verify Live Supabase Health
+        if: ${{ secrets.VITE_SUPABASE_URL != '' && secrets.VITE_SUPABASE_ANON_KEY != '' }}
+        run: |
+          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" \
+            "${{ secrets.VITE_SUPABASE_URL }}/rest/v1/traders?select=id,nickname,mood" \
+            -H "apikey: ${{ secrets.VITE_SUPABASE_ANON_KEY }}")
+          echo "[SUPABASE] Live REST health HTTP $STATUS"
+          test "$STATUS" -eq 200
+
+      - name: Upload Frontend Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tefeci-frontend-dist
+          path: dist/
+
+  deploy-render-vercel:
+    name: Deploy to Render & Vercel
+    needs: quant-verify-and-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Trigger Render Worker Deploy Hook
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "[RENDER] Triggering Frankfurt worker deployment..."
+            curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL"
+            echo "[RENDER] Deploy hook accepted (200 OK)."
+          else
+            echo "[RENDER] RENDER_DEPLOY_HOOK_URL secret not configured yet. Connect Render blueprint (render.yaml) and add secret to enable auto-trigger."
+          fi
+
+      - name: Deploy Frontend to Vercel Production
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: |
+          if [ -n "$VERCEL_TOKEN" ]; then
+            echo "[VERCEL] Deploying Dopamine UI to production..."
+            npx --yes vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+            npx --yes vercel build --prod --token="$VERCEL_TOKEN"
+            npx --yes vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+            echo "[VERCEL] Production deployment live (200 OK)."
+          else
+            echo "[VERCEL] VERCEL_TOKEN secret not configured yet. Import repo in Vercel (vercel.json ready) and add VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID secrets."
+          fi

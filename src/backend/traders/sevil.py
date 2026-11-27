@@ -14,6 +14,8 @@ from src.backend.traders import BaseTrader, TradeSignal
 class MadamSevil(BaseTrader):
     trader_id = "sevil"
     nickname = "Madam Sevil"
+    archetype = "Soğukkanlı Bollinger + RSI Ortalamaya Dönüş (8x)"
+    base_leverage = 8
 
     def __init__(self, window: int = 20, rsi_period: int = 14) -> None:
         super().__init__()

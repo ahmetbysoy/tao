@@ -7,7 +7,8 @@ Connects to wss://fstream.binance.com/stream for combined streams:
   - <symbol>@forceOrder
   - <symbol>@depth20@100ms
 
-Includes exponential backoff + jitter reconnection and a 30s silence watchdog.
+Includes exponential backoff + jitter reconnection, a 30s silence watchdog,
+and automatic OKX Swap REST fallback for Open Interest when Binance REST is geo-restricted.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ logger = logging.getLogger("tefeci.feed")
 
 BINANCE_FSTREAM_BASE = "wss://fstream.binance.com/stream"
 BINANCE_FAPI_REST = "https://fapi.binance.com"
+OKX_PUBLIC_OI_REST = "https://www.okx.com/api/v5/public/open-interest"
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,7 +225,8 @@ class BinanceFuturesFeed:
                 ) as ws:
                     attempt = 0
                     self._last_msg_monotonic = time.monotonic()
-                    logger.info("Connected to Binance Futures WSS")
+                    sym_list = ", ".join(s.upper().replace("USDT", "") for s in self.symbols)
+                    logger.info("[FEED] Connected to Binance Futures WSS (%s).", sym_list)
 
                     while self._running:
                         try:
@@ -265,11 +268,12 @@ class BinanceFuturesFeed:
 
 
 class BinanceRestClient:
-    """Lightweight async REST client for Open Interest polling."""
+    """Lightweight async REST client for Open Interest polling with OKX geo-fallback."""
 
     def __init__(self, session: Optional[aiohttp.ClientSession] = None) -> None:
         self._external_session = session
         self._session: Optional[aiohttp.ClientSession] = session
+        self._binance_geo_blocked = False
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -278,13 +282,43 @@ class BinanceRestClient:
             )
         return self._session
 
+    @staticmethod
+    def _to_okx_inst_id(symbol: str) -> str:
+        sym = symbol.upper()
+        if sym.endswith("USDT"):
+            base = sym[:-4]
+            return f"{base}-USDT-SWAP"
+        return f"{sym}-SWAP"
+
     async def fetch_open_interest(self, symbol: str) -> float:
         session = await self._get_session()
-        url = f"{BINANCE_FAPI_REST}/fapi/v1/openInterest"
-        async with session.get(url, params={"symbol": symbol.upper()}) as resp:
+        if not self._binance_geo_blocked:
+            url = f"{BINANCE_FAPI_REST}/fapi/v1/openInterest"
+            try:
+                async with session.get(url, params={"symbol": symbol.upper()}) as resp:
+                    if resp.status == 451:
+                        self._binance_geo_blocked = True
+                        logger.info(
+                            "Binance REST OI geo-restricted (HTTP 451); switching to OKX Swap OI fallback"
+                        )
+                    else:
+                        resp.raise_for_status()
+                        data = await resp.json()
+                        return float(data["openInterest"])
+            except aiohttp.ClientError:
+                self._binance_geo_blocked = True
+
+        # Fallback: OKX public perpetual swap open interest (in coin units)
+        inst_id = self._to_okx_inst_id(symbol)
+        async with session.get(
+            OKX_PUBLIC_OI_REST, params={"instType": "SWAP", "instId": inst_id}
+        ) as resp:
             resp.raise_for_status()
-            data = await resp.json()
-            return float(data["openInterest"])
+            payload = await resp.json()
+            rows = payload.get("data") or []
+            if not rows:
+                return 0.0
+            return float(rows[0].get("oiCcy") or rows[0].get("oi") or 0.0)
 
     async def close(self) -> None:
         if self._external_session is None and self._session is not None:

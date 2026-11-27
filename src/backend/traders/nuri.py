@@ -11,6 +11,8 @@ from src.backend.traders import BaseTrader, TradeSignal
 class FonlamaNuri(BaseTrader):
     trader_id = "nuri"
     nickname = "Fonlama Nuri"
+    archetype = "Fonlama Oranı & Açık Faiz Arbitrajcısı (25x)"
+    base_leverage = 25
 
     def __init__(self, funding_threshold: float = 0.0001) -> None:
         super().__init__()

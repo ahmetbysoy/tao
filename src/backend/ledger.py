@@ -1,4 +1,4 @@
-"""Tefeci Debt Ledger & Supabase PostgreSQL state-change-only synchronizer."""
+"""Tefeci Debt Ledger & Supabase PostgreSQL state synchronizer."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import logging
 import os
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 
 logger = logging.getLogger("tefeci.ledger")
@@ -24,13 +24,36 @@ class DebtRecord:
     compounding_period_s: int
     due_date_ms: int
     status: DebtStatus = "aktif"
+    initial_principal: float = 0.0
     created_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
     last_compounded_ms: int = field(default_factory=lambda: int(time.time() * 1000))
     total_repaid: float = 0.0
+    enforcer_count: int = 0
     penalty_multiplier: float = 1.5
+
+    def __post_init__(self) -> None:
+        if self.initial_principal <= 0:
+            self.initial_principal = self.principal
 
     def current_owed(self) -> float:
         return max(0.0, self.principal - self.total_repaid)
+
+    def accrued_interest(self) -> float:
+        return max(0.0, self.principal - self.initial_principal)
+
+    def to_db_row(self) -> Dict[str, Any]:
+        return {
+            "id": self.debt_id,
+            "trader_id": self.trader_id,
+            "principal": round(self.principal, 4),
+            "initial_principal": round(self.initial_principal, 4),
+            "interest_rate": round(self.interest_rate, 6),
+            "compounding_period_s": int(self.compounding_period_s),
+            "due_date_ms": int(self.due_date_ms),
+            "status": self.status,
+            "total_repaid": round(self.total_repaid, 4),
+            "enforcer_count": int(self.enforcer_count),
+        }
 
     def compound_if_due(self, now_ms: Optional[int] = None) -> bool:
         if self.status in ("patladı", "ödendi", "teklif"):
@@ -58,7 +81,7 @@ class DebtRecord:
 
 
 class SupabaseSync:
-    """Writes only state transitions to Supabase PostgreSQL (debts, positions, events)."""
+    """Authoritative Supabase PostgreSQL synchronizer for traders, debts, positions, events, and equity."""
 
     def __init__(
         self,
@@ -73,12 +96,17 @@ class SupabaseSync:
                 from supabase import create_client
 
                 self._client = create_client(self.url, self.key)
+                logger.info("Connected SupabaseSync to %s", self.url)
             except Exception:
                 logger.exception("Failed to initialize Supabase client")
 
+    @property
+    def connected(self) -> bool:
+        return self._client is not None
+
     async def upsert_table(self, table: str, payload: dict) -> None:
         if self._client is None:
-            logger.debug("Supabase state [%s]: %s", table, payload)
+            logger.debug("Supabase upsert [%s]: %s", table, payload)
             return
         try:
             await asyncio.to_thread(
@@ -87,29 +115,134 @@ class SupabaseSync:
         except Exception:
             logger.exception("Supabase upsert failed on %s", table)
 
-    async def insert_event(self, event_type: str, trader_id: str, message: str) -> None:
+    async def update_table(self, table: str, row_id: str, fields: dict) -> None:
         if self._client is None:
-            logger.debug("Supabase event [%s] %s: %s", event_type, trader_id, message)
+            logger.debug("Supabase update [%s/%s]: %s", table, row_id, fields)
+            return
+        try:
+            await asyncio.to_thread(
+                lambda: self._client.table(table)
+                .update(fields)
+                .eq("id", row_id)
+                .execute()
+            )
+        except Exception:
+            logger.exception("Supabase update failed on %s/%s", table, row_id)
+
+    async def insert_row(self, table: str, payload: dict) -> None:
+        if self._client is None:
+            logger.debug("Supabase insert [%s]: %s", table, payload)
+            return
+        try:
+            await asyncio.to_thread(
+                lambda: self._client.table(table).insert(payload).execute()
+            )
+        except Exception:
+            logger.exception("Supabase insert failed on %s", table)
+
+    async def insert_event(
+        self,
+        event_type: str,
+        trader_id: str,
+        message: str,
+        payload: Optional[dict] = None,
+        processed: bool = True,
+    ) -> None:
+        row = {
+            "type": event_type,
+            "trader_id": trader_id,
+            "message": message,
+            "payload": payload or {},
+            "processed": processed,
+        }
+        await self.insert_row("events", row)
+
+    async def fetch_pending_commands(self) -> List[Dict[str, Any]]:
+        if self._client is None:
+            return []
+        try:
+            res = await asyncio.to_thread(
+                lambda: self._client.table("events")
+                .select("*")
+                .eq("processed", False)
+                .order("id", desc=False)
+                .limit(25)
+                .execute()
+            )
+            return list(res.data or [])
+        except Exception:
+            logger.exception("Failed fetching pending commands")
+            return []
+
+    async def mark_event_processed(self, event_id: int) -> None:
+        if self._client is None:
             return
         try:
             await asyncio.to_thread(
                 lambda: self._client.table("events")
-                .insert({"type": event_type, "trader_id": trader_id, "message": message})
+                .update({"processed": True})
+                .eq("id", event_id)
                 .execute()
             )
         except Exception:
-            logger.exception("Supabase event insert failed")
+            logger.exception("Failed marking event %s processed", event_id)
+
+    async def delete_stale_rows(self, table: str, column: str, value: str) -> None:
+        if self._client is None:
+            return
+        try:
+            await asyncio.to_thread(
+                lambda: self._client.table(table).delete().eq(column, value).execute()
+            )
+        except Exception:
+            logger.exception("Failed deleting stale rows on %s", table)
+
+    async def fetch_all(self, table: str, limit: int = 200) -> List[Dict[str, Any]]:
+        if self._client is None:
+            return []
+        try:
+            res = await asyncio.to_thread(
+                lambda: self._client.table(table).select("*").limit(limit).execute()
+            )
+            return list(res.data or [])
+        except Exception:
+            logger.exception("Failed fetching rows from %s", table)
+            return []
+
+    async def prune_equity_snapshots(self, keep_last: int = 180) -> None:
+        if self._client is None:
+            return
+        try:
+            res = await asyncio.to_thread(
+                lambda: self._client.table("equity_snapshots")
+                .select("id")
+                .order("id", desc=True)
+                .range(keep_last, keep_last + 100)
+                .execute()
+            )
+            old_ids = [r["id"] for r in (res.data or [])]
+            if old_ids:
+                await asyncio.to_thread(
+                    lambda: self._client.table("equity_snapshots")
+                    .delete()
+                    .in_("id", old_ids)
+                    .execute()
+                )
+        except Exception:
+            logger.debug("Snapshot prune skipped")
 
     async def push_state(self, path: str, payload: dict) -> None:
-        """Route legacy path ('debts/id', 'positions/id', 'events/id') to Supabase tables."""
+        """Route legacy path ('debts/id', 'positions/id', 'events/id') safely to Supabase tables."""
         parts = path.strip("/").split("/", 1)
         table = parts[0]
         record_id = parts[1] if len(parts) > 1 else None
         if table == "events":
             await self.insert_event(
-                str(payload.get("event", "INFO")),
+                str(payload.get("event", payload.get("type", "INFO"))),
                 str(payload.get("trader_id", "")),
                 str(payload.get("message", payload)),
+                payload=payload,
+                processed=True,
             )
             return
         row = dict(payload)
@@ -126,7 +259,8 @@ class DebtLedger:
 
     def __init__(self, sync: Optional[SupabaseSync] = None) -> None:
         self.debts: Dict[str, DebtRecord] = {}
-        self.firebase = sync or SupabaseSync()  # Keep attribute name for worker compatibility
+        self.sync = sync or SupabaseSync()
+        self.firebase = self.sync  # Backward-compatible alias
 
     async def issue_debt(
         self,
@@ -142,6 +276,7 @@ class DebtLedger:
             debt_id=f"debt_{uuid.uuid4().hex[:10]}",
             trader_id=trader_id,
             principal=principal,
+            initial_principal=principal,
             interest_rate=interest_rate,
             compounding_period_s=compounding_period_s,
             due_date_ms=now_ms + duration_s * 1000,
@@ -150,38 +285,38 @@ class DebtLedger:
             last_compounded_ms=now_ms,
         )
         self.debts[debt.debt_id] = debt
-        await self.firebase.upsert_table(
-            "debts",
-            {
-                "id": debt.debt_id,
-                "trader_id": debt.trader_id,
-                "principal": debt.principal,
-                "interest_rate": debt.interest_rate,
-                "compounding_period_s": debt.compounding_period_s,
-                "due_date_ms": debt.due_date_ms,
-                "status": debt.status,
-                "total_repaid": debt.total_repaid,
-            },
-        )
+        await self.sync.upsert_table("debts", debt.to_db_row())
         return debt
 
     async def double_interest(self, debt_id: str) -> DebtRecord:
+        return await self.boost_interest(debt_id, factor=2.0)
+
+    async def boost_interest(self, debt_id: str, factor: float = 1.5) -> DebtRecord:
         debt = self.debts[debt_id]
-        debt.interest_rate = round(debt.interest_rate * 2.0, 4)
-        await self.firebase.upsert_table(
-            "debts", {"id": debt.debt_id, "interest_rate": debt.interest_rate}
+        debt.interest_rate = round(min(debt.interest_rate * factor, 3.0), 4)
+        await self.sync.update_table(
+            "debts", debt.debt_id, {"interest_rate": debt.interest_rate}
+        )
+        return debt
+
+    async def record_enforcer(self, debt_id: str) -> DebtRecord:
+        debt = self.debts[debt_id]
+        debt.enforcer_count += 1
+        await self.sync.update_table(
+            "debts", debt.debt_id, {"enforcer_count": debt.enforcer_count}
         )
         return debt
 
     async def repay(self, debt_id: str, amount: float) -> DebtRecord:
         debt = self.debts[debt_id]
-        debt.total_repaid = round(debt.total_repaid + amount, 4)
+        actual = min(max(0.0, amount), debt.current_owed())
+        debt.total_repaid = round(debt.total_repaid + actual, 4)
         if debt.current_owed() <= 0.01:
             debt.status = "ödendi"
-        await self.firebase.upsert_table(
+        await self.sync.update_table(
             "debts",
+            debt.debt_id,
             {
-                "id": debt.debt_id,
                 "total_repaid": debt.total_repaid,
                 "status": debt.status,
             },
@@ -191,9 +326,7 @@ class DebtLedger:
     async def mark_busted(self, debt_id: str) -> DebtRecord:
         debt = self.debts[debt_id]
         debt.status = "patladı"
-        await self.firebase.upsert_table(
-            "debts", {"id": debt.debt_id, "status": "patladı"}
-        )
+        await self.sync.update_table("debts", debt.debt_id, {"status": "patladı"})
         return debt
 
     async def tick_compounding(self, now_ms: Optional[int] = None) -> List[DebtRecord]:
@@ -201,11 +334,11 @@ class DebtLedger:
         for debt in self.debts.values():
             if debt.compound_if_due(now_ms):
                 updated.append(debt)
-                await self.firebase.upsert_table(
+                await self.sync.update_table(
                     "debts",
+                    debt.debt_id,
                     {
-                        "id": debt.debt_id,
-                        "principal": debt.principal,
+                        "principal": round(debt.principal, 4),
                         "status": debt.status,
                     },
                 )
