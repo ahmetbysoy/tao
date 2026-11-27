@@ -104,6 +104,19 @@ export function getCloudWorkerHealthUrl(): string {
   return "/health";
 }
 
+/** Live Frankfurt Supabase Edge Worker /candles endpoint (Binance REST -> OKX Swap fallback). */
+export function getCloudWorkerCandlesUrl(
+  symbol: string,
+  interval: string,
+  limit = 120
+): string | null {
+  if (!supabaseUrl) return null;
+  const base = `${supabaseUrl.replace(/\/+$/, "")}/functions/v1/tefeci-worker/candles`;
+  return `${base}?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(
+    interval
+  )}&limit=${encodeURIComponent(String(limit))}`;
+}
+
 export function getSupabase(): SupabaseClient | null {
   if (!supabaseUrl || !supabaseAnonKey) {
     return null;

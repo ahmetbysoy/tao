@@ -212,8 +212,9 @@ export const TerminalHeader: React.FC<TerminalHeaderProps> = ({
               [
                 ["market", "Piyasa"],
                 ["traders", "Traderlar"],
-                ["fitil", "Fitil Avı"],
+                ["fitil", "Fitil & Kupa"],
                 ["debts", "Senetler"],
+                ["replay", "Mum Tekrarı"],
               ] as const
             ).map(([id, label]) => (
               <button

@@ -76,7 +76,7 @@ export const HeroGate: React.FC<HeroGateProps> = ({
         <div className="space-y-3">
           <div className="inline-flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[11px] font-bold tracking-[0.25em] text-amber-400 uppercase">
             <Flame className="h-3.5 w-3.5" />
-            TUR 2 // CANLI BINANCE &amp; MAHALLE KUPASI
+            CANLI BINANCE // KUPA &amp; MUM TEKRARI
           </div>
           {inviteCupCode && (
             <div className="mx-auto max-w-md rounded-xl border border-cyan-500/50 bg-cyan-950/40 px-4 py-2.5 text-xs text-cyan-100 shadow-lg">

@@ -1,8 +1,8 @@
 import React from "react";
-import { Activity, Flame, ScrollText, Users } from "lucide-react";
+import { Activity, Flame, History, ScrollText, Users } from "lucide-react";
 import { hapticShort } from "../utils/haptics";
 
-export type NavTab = "market" | "traders" | "fitil" | "debts";
+export type NavTab = "market" | "traders" | "fitil" | "debts" | "replay";
 
 interface BottomNavProps {
   activeTab: NavTab;
@@ -18,9 +18,10 @@ const TABS: Array<{
   Icon: React.ComponentType<{ className?: string }>;
 }> = [
   { id: "market", label: "Piyasa", Icon: Activity },
-  { id: "traders", label: "Traderlar", Icon: Users },
-  { id: "fitil", label: "Fitil Avı", Icon: Flame },
-  { id: "debts", label: "Senetler", Icon: ScrollText },
+  { id: "traders", label: "Trader", Icon: Users },
+  { id: "fitil", label: "Fitil", Icon: Flame },
+  { id: "debts", label: "Senet", Icon: ScrollText },
+  { id: "replay", label: "Tekrar", Icon: History },
 ];
 
 export const BottomNav: React.FC<BottomNavProps> = ({
@@ -36,7 +37,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
       className="fixed right-0 bottom-0 left-0 z-40 border-t border-zinc-800/90 bg-[#07080c]/95 backdrop-blur-xl lg:hidden"
       style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
     >
-      <div className="mx-auto grid max-w-lg grid-cols-4 px-1.5 py-1.5">
+      <div className="mx-auto grid max-w-lg grid-cols-5 px-1 py-1.5">
         {TABS.map(({ id, label, Icon }) => {
           const active = activeTab === id;
           const badge =
@@ -55,7 +56,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
                 onSelectTab(id);
               }}
               aria-current={active ? "page" : undefined}
-              className={`relative flex min-h-[48px] flex-col items-center justify-center gap-0.5 rounded-xl px-1 py-1 text-[11px] font-bold transition active:scale-95 ${
+              className={`relative flex min-h-[48px] flex-col items-center justify-center gap-0.5 rounded-xl px-0.5 py-1 text-[10px] font-bold transition active:scale-95 ${
                 active
                   ? "bg-amber-500/15 text-amber-300"
                   : "text-zinc-400 hover:text-zinc-200"

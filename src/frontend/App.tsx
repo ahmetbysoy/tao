@@ -9,6 +9,7 @@ import { LiquidationShow } from "./components/LiquidationShow";
 import { LiveQuotesTicker } from "./components/LiveQuotesTicker";
 import { DebtEndurancePanel } from "./components/DebtEndurancePanel";
 import { MahalleKupasi } from "./components/MahalleKupasi";
+import { CandleReplay } from "./components/CandleReplay";
 import { FitilAvi } from "./components/FitilAvi";
 import { KpiBar } from "./components/KpiBar";
 import { LiveEquityChart } from "./components/LiveEquityChart";
@@ -1246,6 +1247,15 @@ export default function App() {
             </div>
 
             <NotificationFeed events={events} />
+          </>
+        )}
+
+        {/* TAB 5: GEÇMİŞ MUM TEKRARI (Sinan — Historical Candle Replay via Binance REST / OKX Fallback) */}
+        {activeTab === "replay" && (
+          <>
+            <CandleReplay />
+            {darkPatternDesk}
+            {liquidationBanner}
           </>
         )}
       </main>

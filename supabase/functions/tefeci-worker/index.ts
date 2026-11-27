@@ -906,6 +906,126 @@ async function runAutonomousTick(
   };
 }
 
+interface HistoricalCandleRow {
+  ts: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+const ALLOWED_CANDLE_SYMBOLS: Record<string, string> = {
+  BTCUSDT: "BTC-USDT-SWAP",
+  ETHUSDT: "ETH-USDT-SWAP",
+  SOLUSDT: "SOL-USDT-SWAP",
+};
+
+const ALLOWED_CANDLE_INTERVALS: Record<string, string> = {
+  "1m": "1m",
+  "5m": "5m",
+  "15m": "15m",
+  "1h": "1H",
+};
+
+function sanitizeCandles(rows: HistoricalCandleRow[]): HistoricalCandleRow[] {
+  const byTs = new Map<number, HistoricalCandleRow>();
+  for (const c of rows) {
+    if (
+      !Number.isFinite(c.ts) ||
+      c.ts <= 0 ||
+      !Number.isFinite(c.open) ||
+      !Number.isFinite(c.high) ||
+      !Number.isFinite(c.low) ||
+      !Number.isFinite(c.close) ||
+      c.open <= 0 ||
+      c.high <= 0 ||
+      c.low <= 0 ||
+      c.close <= 0
+    ) {
+      continue;
+    }
+    byTs.set(c.ts, {
+      ts: Math.trunc(c.ts),
+      open: c.open,
+      high: Math.max(c.high, c.open, c.close),
+      low: Math.min(c.low, c.open, c.close),
+      close: c.close,
+      volume: Number.isFinite(c.volume) ? Math.max(0, c.volume) : 0,
+    });
+  }
+  return Array.from(byTs.values()).sort((a, b) => a.ts - b.ts);
+}
+
+async function fetchRealHistoricalCandles(
+  symbol: string,
+  interval: string,
+  limit: number
+): Promise<{ source: "binance_fapi" | "okx_swap"; candles: HistoricalCandleRow[] }> {
+  // 1. Primary: Binance USD-M Futures REST
+  try {
+    const binanceUrl = `https://fapi.binance.com/fapi/v1/klines?symbol=${encodeURIComponent(
+      symbol
+    )}&interval=${encodeURIComponent(interval)}&limit=${limit}`;
+    const res = await fetch(binanceUrl, { signal: AbortSignal.timeout(4500) });
+    if (res.ok) {
+      const raw = (await res.json()) as unknown[];
+      if (Array.isArray(raw) && raw.length > 0) {
+        const parsed: HistoricalCandleRow[] = [];
+        for (const item of raw) {
+          if (!Array.isArray(item) || item.length < 6) continue;
+          parsed.push({
+            ts: Number(item[0]),
+            open: parseFloat(String(item[1])),
+            high: parseFloat(String(item[2])),
+            low: parseFloat(String(item[3])),
+            close: parseFloat(String(item[4])),
+            volume: parseFloat(String(item[5])),
+          });
+        }
+        const cleaned = sanitizeCandles(parsed);
+        if (cleaned.length >= 10) {
+          return { source: "binance_fapi", candles: cleaned };
+        }
+      }
+    }
+  } catch {
+    // Fall through to OKX geo-block fallback
+  }
+
+  // 2. Approved Geo-Block Fallback: OKX Perpetual Swap REST
+  const okxInst = ALLOWED_CANDLE_SYMBOLS[symbol];
+  const okxBar = ALLOWED_CANDLE_INTERVALS[interval];
+  const okxUrl = `https://www.okx.com/api/v5/market/candles?instId=${encodeURIComponent(
+    okxInst
+  )}&bar=${encodeURIComponent(okxBar)}&limit=${Math.min(limit, 300)}`;
+  const okxRes = await fetch(okxUrl, { signal: AbortSignal.timeout(5000) });
+  if (!okxRes.ok) {
+    throw new Error(`OKX candles HTTP ${okxRes.status}`);
+  }
+  const okxJson = (await okxRes.json()) as { code?: string; data?: unknown[] };
+  if (okxJson.code !== "0" || !Array.isArray(okxJson.data) || okxJson.data.length === 0) {
+    throw new Error("OKX candles empty response");
+  }
+  const parsed: HistoricalCandleRow[] = [];
+  for (const item of okxJson.data) {
+    if (!Array.isArray(item) || item.length < 6) continue;
+    parsed.push({
+      ts: Number(item[0]),
+      open: parseFloat(String(item[1])),
+      high: parseFloat(String(item[2])),
+      low: parseFloat(String(item[3])),
+      close: parseFloat(String(item[4])),
+      volume: parseFloat(String(item[5])),
+    });
+  }
+  const cleaned = sanitizeCandles(parsed);
+  if (cleaned.length < 10) {
+    throw new Error("Yetersiz gerçek mum verisi");
+  }
+  return { source: "okx_swap", candles: cleaned };
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
@@ -917,6 +1037,52 @@ Deno.serve(async (req: Request) => {
 
   const url = new URL(req.url);
   const action = url.searchParams.get("action") || "";
+
+  // Tur 3 (Sinan): Real Historical Candles endpoint (Binance Futures REST -> OKX Swap fallback)
+  if (action === "candles" || url.pathname.endsWith("/candles")) {
+    const rawSym = (url.searchParams.get("symbol") || "BTCUSDT").trim().toUpperCase();
+    const rawIv = (url.searchParams.get("interval") || "1m").trim().toLowerCase();
+    const rawLimit = Number(url.searchParams.get("limit") || "120");
+    if (!ALLOWED_CANDLE_SYMBOLS[rawSym]) {
+      return new Response(
+        JSON.stringify({ status: "error", error: `Desteklenmeyen sembol: ${rawSym}` }),
+        { status: 400, headers: CORS_HEADERS }
+      );
+    }
+    if (!ALLOWED_CANDLE_INTERVALS[rawIv]) {
+      return new Response(
+        JSON.stringify({ status: "error", error: `Desteklenmeyen aralık: ${rawIv}` }),
+        { status: 400, headers: CORS_HEADERS }
+      );
+    }
+    const clampedLimit = Math.max(30, Math.min(200, Number.isFinite(rawLimit) ? Math.trunc(rawLimit) : 120));
+    try {
+      const { source, candles } = await fetchRealHistoricalCandles(rawSym, rawIv, clampedLimit);
+      return new Response(
+        JSON.stringify({
+          status: "ok",
+          symbol: rawSym,
+          interval: rawIv,
+          source,
+          count: candles.length,
+          candles,
+          timestamp: new Date().toISOString(),
+        }),
+        { status: 200, headers: CORS_HEADERS }
+      );
+    } catch (err) {
+      return new Response(
+        JSON.stringify({
+          status: "error",
+          error:
+            err instanceof Error
+              ? `Gerçek mum verisi alınamadı: ${err.message}`
+              : "Gerçek mum verisi alınamadı",
+        }),
+        { status: 502, headers: CORS_HEADERS }
+      );
+    }
+  }
 
   try {
     const { tickers, source } = await fetchLiveMarket();
