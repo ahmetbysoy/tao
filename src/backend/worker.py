@@ -666,20 +666,11 @@ class TefeciWorker:
                         break
 
             elif ev_type == "SIMULATE_WHALE":
-                sym = str(payload.get("symbol") or "BTCUSDT").upper()
-                book = self.feed.latest_book.get(sym)
-                px = ((book.bid_price + book.ask_price) / 2.0) if book else 60000.0
-                notional = max(1_050_000.0, float(payload.get("notional_usdt") or 1_450_000.0))
-                synthetic = ForceOrderEvent(
-                    symbol=sym,
-                    side=str(payload.get("side") or "SELL"),
-                    price=px,
-                    avg_price=px,
-                    qty=notional / max(1.0, px),
-                    notional_usdt=notional,
-                    trade_time_ms=int(time.time() * 1000),
+                # Burak (Mock Audit): Production strictly forbids synthetic/mock whale events.
+                logger.warning(
+                    "[MOCK-BLOCK] Rejected synthetic whale command id=%s; only real exchange forceOrder events are accepted.",
+                    ev_id,
                 )
-                await self._handle_whale_liquidation(synthetic, bypass_cooldown=True)
         finally:
             await self.ledger.sync.mark_event_processed(ev_id)
 

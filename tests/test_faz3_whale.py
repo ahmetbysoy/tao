@@ -52,7 +52,8 @@ async def test_whale_alert_threshold_and_auto_interest_hike():
 
 
 @pytest.mark.asyncio
-async def test_simulate_whale_command():
+async def test_simulate_whale_command_rejected_in_prod():
+    """Burak mock audit: SIMULATE_WHALE synthetic commands MUST be rejected (zero fake events)."""
     worker = TefeciWorker(symbols=("btcusdt", "ethusdt", "solusdt"))
     worker.ledger = DebtLedger(sync=SupabaseSync(url="", key=""))
     worker.feed.latest_book["SOLUSDT"] = BookTickerEvent(
@@ -78,4 +79,5 @@ async def test_simulate_whale_command():
             "payload": {"symbol": "SOLUSDT", "notional_usdt": 1_500_000.0},
         }
     )
-    assert selo_debt.interest_rate == pytest.approx(0.15)
+    # Interest must remain completely untouched because synthetic whale events are banned!
+    assert selo_debt.interest_rate == pytest.approx(0.10)

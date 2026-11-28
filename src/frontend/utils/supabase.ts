@@ -9,7 +9,19 @@ export type TableName =
   | "positions"
   | "debts"
   | "events"
-  | "equity_snapshots";
+  | "equity_snapshots"
+  | "market_funding_snapshots";
+
+export interface MarketFundingRow {
+  symbol: string;
+  mark_price: number;
+  funding_rate: number;
+  next_funding_ms: number;
+  imbalance: number;
+  change_pct_24h: number;
+  source: "binance_futures" | "okx_swap" | string;
+  updated_at?: string;
+}
 
 export interface TraderRow {
   id: TraderVoiceId;

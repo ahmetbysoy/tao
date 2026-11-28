@@ -38,26 +38,29 @@ import {
   playTradeOpen,
   playWarningAlarm,
 } from "../utils/sfx";
+import { speakStreetEvent } from "../utils/tts";
+import { SimulationDisclaimerBanner } from "./SimulationDisclaimerBanner";
 
-const INITIAL_VISIBLE_BARS = 32;
 const VIEWPORT_WINDOW = 48;
 const SPEED_MS: Record<number, number> = {
   1: 900,
   2: 450,
-  4: 200,
+  4: 220,
+  8: 110,
 };
 
 export const CandleReplay: React.FC = () => {
   const [symbol, setSymbol] = useState<ReplaySymbol>("BTCUSDT");
   const [interval, setIntervalKey] = useState<ReplayInterval>("1m");
+  const [candleLimit, setCandleLimit] = useState<30 | 120>(120);
   const [candles, setCandles] = useState<HistoricalCandle[]>([]);
   const [source, setSource] = useState<CandleSource | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const [cursor, setCursor] = useState<number>(INITIAL_VISIBLE_BARS - 1);
+  const [cursor, setCursor] = useState<number>(12);
   const [playing, setPlaying] = useState<boolean>(false);
-  const [speed, setSpeed] = useState<1 | 2 | 4>(2);
+  const [speed, setSpeed] = useState<1 | 2 | 4 | 8>(2);
 
   // Isolated replay practice state (100% real historical candles, virtual practice balance)
   const [balance, setBalance] = useState<number>(REPLAY_START_BALANCE);
@@ -73,17 +76,18 @@ export const CandleReplay: React.FC = () => {
 
   const decimals = REPLAY_SYMBOLS.find((s) => s.key === symbol)?.decimals ?? 2;
 
-  const loadCandles = useCallback(async (sym: ReplaySymbol, iv: ReplayInterval) => {
+  const loadCandles = useCallback(async (sym: ReplaySymbol, iv: ReplayInterval, lim: 30 | 120) => {
     setPlaying(false);
     setPosition(null);
     setLastBanner(null);
     setLoading(true);
     setErrorMsg(null);
     try {
-      const res = await fetchHistoricalCandles(sym, iv, 120);
+      const res = await fetchHistoricalCandles(sym, iv, lim);
       setCandles(res.candles);
       setSource(res.source);
-      setCursor(Math.min(INITIAL_VISIBLE_BARS - 1, Math.max(0, res.candles.length - 1)));
+      const startBars = lim === 30 ? 10 : 32;
+      setCursor(Math.min(startBars - 1, Math.max(0, res.candles.length - 1)));
     } catch (err) {
       setCandles([]);
       setSource(null);
@@ -98,8 +102,8 @@ export const CandleReplay: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    loadCandles(symbol, interval);
-  }, [symbol, interval, loadCandles]);
+    loadCandles(symbol, interval, candleLimit);
+  }, [symbol, interval, candleLimit, loadCandles]);
 
   const currentCandle = candles[cursor] ?? null;
   const atEnd = candles.length > 0 && cursor >= candles.length - 1;
@@ -149,6 +153,7 @@ export const CandleReplay: React.FC = () => {
       setPosition(null);
       hapticLong();
       playLiquidationSiren();
+      speakStreetEvent("mehmet", "liquidation", currentCandle.close + lossAmt);
       setLastBanner({
         text: `FİTİL LİKİDE ETTİ! ${position.symbol} ${position.side} ${position.leverage}x · -$${lossAmt.toFixed(
           2
@@ -215,6 +220,7 @@ export const CandleReplay: React.FC = () => {
     if (netPnl >= 0) {
       hapticMedium();
       playCashRegister();
+      speakStreetEvent("sevil", "big_profit", currentCandle.close + netPnl);
       setLastBanner({
         text: `Kârla Kapandı: +$${netPnl.toFixed(2)} (${position.symbol} ${position.side} ${position.leverage}x)`,
         tone: "win",
@@ -222,6 +228,7 @@ export const CandleReplay: React.FC = () => {
     } else {
       hapticShort();
       playWarningAlarm();
+      speakStreetEvent("selo", "big_loss", currentCandle.close + Math.abs(netPnl));
       setLastBanner({
         text: `Zararla Kapandı: -$${Math.abs(netPnl).toFixed(2)} (${position.symbol} ${position.side} ${position.leverage}x)`,
         tone: "loss",
@@ -238,7 +245,8 @@ export const CandleReplay: React.FC = () => {
     setBalance(REPLAY_START_BALANCE);
     setTrades([]);
     setHighLevTrades(0);
-    setCursor(Math.min(INITIAL_VISIBLE_BARS - 1, Math.max(0, candles.length - 1)));
+    const startBars = candleLimit === 30 ? 10 : 32;
+    setCursor(Math.min(startBars - 1, Math.max(0, candles.length - 1)));
   };
 
   // Consistency score (never raw profit!)
@@ -372,19 +380,50 @@ export const CandleReplay: React.FC = () => {
             ))}
           </div>
 
-          <button
-            type="button"
-            disabled={loading}
-            onClick={() => {
-              hapticShort();
-              playClick();
-              loadCandles(symbol, interval);
-            }}
-            className="inline-flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-xl border border-zinc-700 bg-zinc-900 px-3 text-xs font-bold text-zinc-200 transition hover:bg-zinc-800 active:scale-95 disabled:opacity-50"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-            Yenile
-          </button>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {([30, 120] as const).map((lim) => (
+              <button
+                key={lim}
+                type="button"
+                onClick={() => {
+                  hapticShort();
+                  playClick();
+                  setCandleLimit(lim);
+                }}
+                className={`min-h-[44px] cursor-pointer rounded-xl border px-2.5 font-mono text-[11px] font-bold transition active:scale-95 ${
+                  candleLimit === lim
+                    ? "border-emerald-400 bg-emerald-500/20 text-emerald-200"
+                    : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                {lim === 30 ? "Kısa Test (30)" : "Tam Seri (120)"}
+              </button>
+            ))}
+
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => {
+                hapticShort();
+                playClick();
+                loadCandles(symbol, interval, candleLimit);
+              }}
+              className="inline-flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-xl border border-zinc-700 bg-zinc-900 px-3 text-xs font-bold text-zinc-200 transition hover:bg-zinc-800 active:scale-95 disabled:opacity-50"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+              Yenile
+            </button>
+          </div>
+        </div>
+
+        {/* Mehmet FİTİLCİ: Real Exchange Rules Bar */}
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-zinc-800/80 bg-black/45 px-2.5 py-1.5 font-mono text-[10px] text-zinc-400">
+          <span>Borsa Kuralları:</span>
+          <span className="text-zinc-200">Taker Komisyon %0.04</span>
+          <span>•</span>
+          <span className="text-zinc-200">Bakım Marjini %0.50</span>
+          <span>•</span>
+          <span className="text-zinc-200">Mum-içi Fitil Likidasyonu Aktif</span>
         </div>
 
         {/* Error / Loading / Candlestick Chart */}
@@ -583,7 +622,7 @@ export const CandleReplay: React.FC = () => {
 
           <div className="flex items-center gap-1">
             <FastForward className="h-3.5 w-3.5 text-zinc-500" />
-            {([1, 2, 4] as const).map((sp) => (
+            {([1, 2, 4, 8] as const).map((sp) => (
               <button
                 key={sp}
                 type="button"
@@ -757,6 +796,9 @@ export const CandleReplay: React.FC = () => {
             </div>
           </div>
         )}
+        <div className="mt-3">
+          <SimulationDisclaimerBanner compact />
+        </div>
       </div>
     </section>
   );

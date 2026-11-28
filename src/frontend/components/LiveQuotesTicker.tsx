@@ -10,6 +10,7 @@ import {
 import { hapticShort } from "../utils/haptics";
 import { LiveMarketQuote, SPEAKER_ACCENT } from "../utils/liveQuotes";
 import { speakAs } from "../utils/tts";
+import { SimulationDisclaimerBanner } from "./SimulationDisclaimerBanner";
 
 interface LiveQuotesTickerProps {
   quotes: LiveMarketQuote[];
@@ -170,6 +171,10 @@ export const LiveQuotesTicker: React.FC<LiveQuotesTickerProps> = ({
           })}
         </div>
       )}
+
+      <div className="mt-2.5">
+        <SimulationDisclaimerBanner compact />
+      </div>
     </section>
   );
 };

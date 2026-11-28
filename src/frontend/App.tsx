@@ -10,6 +10,8 @@ import { LiveQuotesTicker } from "./components/LiveQuotesTicker";
 import { DebtEndurancePanel } from "./components/DebtEndurancePanel";
 import { MahalleKupasi } from "./components/MahalleKupasi";
 import { CandleReplay } from "./components/CandleReplay";
+import { SimulationDisclaimerBanner } from "./components/SimulationDisclaimerBanner";
+import { YeraltiKahvehaneMap } from "./components/YeraltiKahvehaneMap";
 import { FitilAvi } from "./components/FitilAvi";
 import { KpiBar } from "./components/KpiBar";
 import { LiveEquityChart } from "./components/LiveEquityChart";
@@ -39,6 +41,7 @@ import {
   EventRow,
   getCloudWorkerHealthUrl,
   isSupabaseConfigured,
+  MarketFundingRow,
   PositionRow,
   pushCommand,
   subscribeTable,
@@ -73,6 +76,7 @@ import {
   isTtsEnabled,
   setTtsEnabled,
   speakAs,
+  speakStreetEvent,
   TraderVoiceId,
   unlockAudio,
 } from "./utils/tts";
@@ -121,6 +125,7 @@ export default function App() {
   const [positionRows, setPositionRows] = useState<PositionRow[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [snapshots, setSnapshots] = useState<EquitySnapshotRow[]>([]);
+  const [fundingSnapshots, setFundingSnapshots] = useState<MarketFundingRow[]>([]);
 
   // Real Binance !forceOrder@arr Liquidation Show state (Ece)
   const [liquidations, setLiquidations] = useState<LiveLiquidationItem[]>([]);
@@ -496,6 +501,15 @@ export default function App() {
       }
     );
 
+    const unsubFunding = subscribeTable<MarketFundingRow>(
+      "market_funding_snapshots",
+      setFundingSnapshots,
+      {
+        orderBy: { column: "symbol", ascending: true },
+        pollMs: 10_000,
+      }
+    );
+
     const unsubEvents = subscribeTable<EventRow>(
       "events",
       (rows) => {
@@ -516,6 +530,12 @@ export default function App() {
         lastSeenEventIdRef.current = maxId;
 
         fresh.forEach((ev) => {
+          const speakerId = (
+            ["selo", "mehmet", "nuri", "kemal", "sevil"].includes(ev.trader_id ?? "")
+              ? ev.trader_id
+              : "tefeci"
+          ) as TraderVoiceId;
+
           if (ev.type === "WHALE_ALERT") {
             const sym = String(ev.payload?.symbol ?? "BTCUSDT");
             const notional = Number(ev.payload?.notional_usdt ?? 1_000_000);
@@ -530,17 +550,32 @@ export default function App() {
               origin: { y: 0.55 },
               colors: ["#ef4444", "#f59e0b", "#10b981"],
             });
-            const who = TRADER_NAMES[ev.trader_id ?? ""] ?? ev.trader_id ?? "Trader";
-            speakAs("tefeci", `${who} likide oldu! Parayı bastın, helal olsun!`);
+            speakStreetEvent(
+              speakerId,
+              "liquidation",
+              Math.abs(Number(ev.payload?.pnl ?? ev.id)),
+              true
+            );
             addToast("LİKİDASYON!", ev.message, "danger");
           } else if (ev.type === "OPEN_POSITION") {
             playTradeOpen();
+            if (ev.message.toLowerCase().includes("tilt") || ev.message.toLowerCase().includes("hata")) {
+              speakStreetEvent(speakerId, "tilt_revenge", ev.id + Number(ev.payload?.entry_price ?? 0));
+            }
             addToast("Yeni Canlı Pozisyon", ev.message, "info");
           } else if (ev.type === "CLOSE_POSITION") {
             const pnl = Number(ev.payload?.pnl ?? 0);
-            if (pnl >= 0) playCashRegister();
+            if (pnl >= 0) {
+              playCashRegister();
+              if (pnl >= 15) {
+                speakStreetEvent(speakerId, "big_profit", ev.id + pnl, true);
+              }
+            } else if (pnl <= -15) {
+              speakStreetEvent(speakerId, "big_loss", ev.id + Math.abs(pnl), true);
+            }
             addToast("Pozisyon Kapandı", ev.message, pnl >= 0 ? "success" : "danger");
           } else if (ev.type === "COMPOUND") {
+            speakStreetEvent("tefeci", "debt_pressure", ev.id + Number(ev.payload?.principal ?? 0));
             addToast("Bileşik Faiz İşledi", ev.message, "gold");
           } else if (ev.type === "SYSTEM" && ev.trader_id !== "tefeci") {
             addToast("Tahsilat Güncellemesi", ev.message, "gold");
@@ -559,6 +594,7 @@ export default function App() {
       unsubDebts();
       unsubPositions();
       unsubSnapshots();
+      unsubFunding();
       unsubEvents();
     };
   }, [entered, addToast, triggerWhaleManipulator]);
@@ -703,7 +739,7 @@ export default function App() {
       }
     }
     setEntered(true);
-    speakAs("tefeci", "Mahalleye hoş geldin. Bakalım bugün kim likide olacak.");
+    speakStreetEvent("tefeci", "enter_neighborhood", Date.now());
   };
 
   const handleTriggerPulse = async (traderId?: TraderVoiceId, nickname?: string) => {
@@ -739,7 +775,7 @@ export default function App() {
     }
     hapticMedium();
     playCashRegister();
-    speakAs("tefeci", `${trader.nickname} hesabından tahsilatı yaptım. Kasa büyür.`);
+    speakStreetEvent("tefeci", "debt_pressure", amount + bal);
     pushCommand(
       "COLLECT_DEBT",
       trader.id,
@@ -1083,6 +1119,8 @@ export default function App() {
         triggerBusy={triggerBusy}
       />
 
+      <SimulationDisclaimerBanner />
+
       <main className="mx-auto max-w-[1440px] space-y-5 px-3 pt-4 sm:px-6 sm:pt-5">
         {/* Global Whale Panic shortcut banner if user is on Traders tab */}
         {whalePanicActive && activeTab === "traders" && darkPatternDesk}
@@ -1091,6 +1129,18 @@ export default function App() {
         {activeTab === "market" && (
           <>
             {liquidationBanner}
+
+            {/* Sevil DOPAMİN + Rıza RADAR: Yeraltı Kahvehanesi & Döviz Bürosu Canlı Haritası */}
+            <YeraltiKahvehaneMap
+              traders={traders}
+              openPositions={openPositions}
+              debts={debtRows}
+              livePrices={livePrices}
+              fundingSnapshots={fundingSnapshots}
+              binanceConnected={binanceConnected}
+              openPnlByTrader={openPnlByTrader}
+              recentLiqTraders={flashingTraderIds}
+            />
 
             <LiveQuotesTicker
               quotes={liveQuotes}
@@ -1168,6 +1218,16 @@ export default function App() {
         {/* TAB 2: TRADERLAR (Traders) */}
         {activeTab === "traders" && (
           <>
+            <YeraltiKahvehaneMap
+              traders={traders}
+              openPositions={openPositions}
+              debts={debtRows}
+              livePrices={livePrices}
+              fundingSnapshots={fundingSnapshots}
+              binanceConnected={binanceConnected}
+              openPnlByTrader={openPnlByTrader}
+              recentLiqTraders={flashingTraderIds}
+            />
             <LiveQuotesTicker
               quotes={liveQuotes}
               binanceConnected={binanceConnected}

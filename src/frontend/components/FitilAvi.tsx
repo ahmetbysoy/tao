@@ -29,6 +29,7 @@ import {
 } from "../utils/fitilScoring";
 import { hapticMedium, hapticShort } from "../utils/haptics";
 import { playCashRegister, playClick, playWarningAlarm } from "../utils/sfx";
+import { speakStreetEvent } from "../utils/tts";
 import { TraderRow } from "../utils/supabase";
 import { PriceTick } from "./TerminalHeader";
 
@@ -192,9 +193,11 @@ export const FitilAvi: React.FC<FitilAviProps> = ({
         if (settlement.won) {
           hapticMedium();
           playCashRegister();
+          speakStreetEvent("mehmet", "wick_catch", latest?.price ?? settledNow);
         } else {
           hapticShort();
           playWarningAlarm();
+          speakStreetEvent("selo", "big_loss", latest?.price ?? settledNow);
         }
       } else {
         hapticShort();

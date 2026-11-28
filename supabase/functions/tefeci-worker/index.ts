@@ -81,6 +81,7 @@ interface MarketTicker {
   symbol: string;
   price: number;
   fundingRate: number;
+  nextFundingMs: number;
   changePct24h: number;
   bidQty: number;
   askQty: number;
@@ -127,7 +128,7 @@ class RestDb {
     });
   }
 
-  async upsert(table: string, row: Record<string, any>): Promise<void> {
+  async upsert(table: string, row: Record<string, any> | Array<Record<string, any>>): Promise<void> {
     await fetch(`${this.url}/rest/v1/${table}`, {
       method: "POST",
       headers: this.headers({ Prefer: "resolution=merge-duplicates,return=minimal" }),
@@ -201,6 +202,7 @@ async function fetchLiveMarket(): Promise<{
             symbol: p.symbol,
             price: Number(p.markPrice || t24?.lastPrice || 0),
             fundingRate: Number(p.lastFundingRate || 0),
+            nextFundingMs: Number(p.nextFundingTime || 0),
             changePct24h: Number(t24?.priceChangePercent || 0),
             bidQty,
             askQty,
@@ -217,18 +219,49 @@ async function fetchLiveMarket(): Promise<{
     // Fall through to OKX Swap fallback
   }
 
-  // 2. Fallback: OKX Perpetual Swaps (zero geo-blocks globally)
+  // 2. Fallback: OKX Perpetual Swaps + REAL live OKX Funding Rates (zero hardcoded funding!)
   const okxMap: Record<string, string> = {
     "BTC-USDT-SWAP": "BTCUSDT",
     "ETH-USDT-SWAP": "ETHUSDT",
     "SOL-USDT-SWAP": "SOLUSDT",
   };
   try {
-    const res = await fetch("https://www.okx.com/api/v5/market/tickers?instType=SWAP", {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (res.ok) {
-      const body = (await res.json()) as { data?: Array<Record<string, string>> };
+    const [tickRes, ...fundResList] = await Promise.all([
+      fetch("https://www.okx.com/api/v5/market/tickers?instType=SWAP", {
+        signal: AbortSignal.timeout(3000),
+      }),
+      ...Object.keys(okxMap).map((inst) =>
+        fetch(`https://www.okx.com/api/v5/public/funding-rate?instId=${inst}`, {
+          signal: AbortSignal.timeout(2500),
+        }).catch(() => null)
+      ),
+    ]);
+
+    const realFundingMap: Record<string, { rate: number; nextMs: number }> = {};
+    for (const fRes of fundResList) {
+      if (!fRes || !fRes.ok) continue;
+      try {
+        const fBody = (await fRes.json()) as {
+          code?: string;
+          data?: Array<{ instId?: string; fundingRate?: string; nextFundingTime?: string }>;
+        };
+        const row = fBody.data?.[0];
+        if (fBody.code === "0" && row?.instId && okxMap[row.instId]) {
+          const parsedRate = Number(row.fundingRate);
+          if (Number.isFinite(parsedRate)) {
+            realFundingMap[okxMap[row.instId]] = {
+              rate: parsedRate,
+              nextMs: Number(row.nextFundingTime || 0),
+            };
+          }
+        }
+      } catch {
+        // Ignore single funding parse error
+      }
+    }
+
+    if (tickRes.ok) {
+      const body = (await tickRes.json()) as { data?: Array<Record<string, string>> };
       for (const row of body.data ?? []) {
         const sym = okxMap[row.instId];
         if (!sym) continue;
@@ -237,10 +270,12 @@ async function fetchLiveMarket(): Promise<{
         const pct = open24h > 0 ? ((last - open24h) / open24h) * 100 : 0;
         const bidQty = Number(row.bidSz || 0);
         const askQty = Number(row.askSz || 0);
+        const fundInfo = realFundingMap[sym];
         tickers[sym] = {
           symbol: sym,
           price: last,
-          fundingRate: 0.0001,
+          fundingRate: fundInfo ? fundInfo.rate : 0,
+          nextFundingMs: fundInfo ? fundInfo.nextMs : 0,
           changePct24h: Number(pct.toFixed(3)),
           bidQty,
           askQty,
@@ -293,14 +328,20 @@ async function openPosition(
   symbol: string,
   side: "LONG" | "SHORT",
   price: number,
-  reason: string
+  reason: string,
+  leverageOverride?: number
 ): Promise<boolean> {
   const bal = Number(trader.balance ?? 0);
   if (bal < 50 || price <= 0) return false;
 
   const prof = TRADER_PROFILES[trader.id] ?? TRADER_PROFILES.kemal;
   const fearLeft = Number(trader.fear_trades_remaining ?? 0);
-  const leverage = fearLeft > 0 ? Math.max(2, Math.floor(prof.baseLeverage / 2)) : prof.baseLeverage;
+  const defaultLev =
+    fearLeft > 0 ? Math.max(2, Math.floor(prof.baseLeverage / 2)) : prof.baseLeverage;
+  const leverage =
+    typeof leverageOverride === "number" && leverageOverride >= 2
+      ? Math.min(75, Math.trunc(leverageOverride))
+      : defaultLev;
   const nextFear = Math.max(0, fearLeft - 1);
 
   const slippage = side === "LONG" ? 1.00018 : 0.99982;
@@ -771,29 +812,59 @@ async function runAutonomousTick(
     const absChg = Math.abs(tk.changePct24h);
     const absObi = Math.abs(tk.imbalance);
     const absFund = Math.abs(tk.fundingRate);
+    const fearLeft = Number(tr.fear_trades_remaining ?? 0);
+    const baseLev =
+      fearLeft > 0 ? Math.max(2, Math.floor(prof.baseLeverage / 2)) : prof.baseLeverage;
+    const wins = Number(tr.win_count ?? 0);
+    const losses = Number(tr.loss_count ?? 0);
+    const mood = String(tr.mood ?? "focused");
     let side: "LONG" | "SHORT" | null = null;
+    let levOverride: number | undefined = undefined;
     let reason = "";
 
-    // 100% real-market deterministic triggers (zero Math.random)
-    if (tr.id === "selo" && (absChg >= 0.45 || absObi >= 0.35)) {
-      side = absObi >= 0.35 ? determineOrderbookSide(tk) : tk.changePct24h >= 0 ? "LONG" : "SHORT";
-      reason = `Hacim/OBI patlaması (${tk.changePct24h >= 0 ? "+" : ""}${tk.changePct24h.toFixed(2)}%, OBI=${tk.imbalance.toFixed(2)})`;
-    } else if (tr.id === "kemal" && absObi >= 0.2) {
+    // Nuri FONLAMA: 100% real-market deterministic triggers + realistic human mistakes/tilt (zero Math.random)
+    if (tr.id === "selo" && (absChg >= 0.45 || absObi >= 0.32)) {
+      side = absObi >= 0.32 ? determineOrderbookSide(tk) : tk.changePct24h >= 0 ? "LONG" : "SHORT";
+      if (mood === "tilted" || mood === "panicked" || losses > wins) {
+        levOverride = fearLeft === 0 ? Math.min(75, baseLev + 15) : baseLev;
+        reason = `Tilt intikam hatası! FOMO ile ${levOverride}x daldı (${tk.changePct24h >= 0 ? "+" : ""}${tk.changePct24h.toFixed(2)}%, OBI=${tk.imbalance.toFixed(2)})`;
+      } else {
+        reason = `Hacim/OBI patlaması (${tk.changePct24h >= 0 ? "+" : ""}${tk.changePct24h.toFixed(2)}%, OBI=${tk.imbalance.toFixed(2)})`;
+      }
+    } else if (tr.id === "kemal" && absObi >= 0.18) {
       side = determineOrderbookSide(tk);
-      reason = `Gerçek tahta dengesizliği (OBI=${tk.imbalance.toFixed(2)} @ $${tk.price.toFixed(2)})`;
-    } else if (tr.id === "nuri" && absFund >= 0.00005) {
-      side = tk.fundingRate >= 0 ? "SHORT" : "LONG";
-      reason = `Funding contrarian (${(tk.fundingRate * 100).toFixed(4)}%)`;
-    } else if (tr.id === "mehmet" && (absChg >= 1.0 || absObi >= 0.3)) {
+      const stubborn = losses > wins && absObi >= 0.35;
+      reason = stubborn
+        ? `Tahta inadı — derinlik tersine dönse de yüklendi (OBI=${tk.imbalance.toFixed(2)})`
+        : `Gerçek tahta dengesizliği (OBI=${tk.imbalance.toFixed(2)} @ $${tk.price.toFixed(2)})`;
+    } else if (tr.id === "nuri" && absFund >= 0.00004) {
+      side = tk.fundingRate > 0 ? "SHORT" : "LONG";
+      const againstTrend =
+        (side === "SHORT" && tk.changePct24h >= 1.5) ||
+        (side === "LONG" && tk.changePct24h <= -1.5);
+      reason = againstTrend
+        ? `İnatçı funding tersi — squeeze riski! (Funding ${(tk.fundingRate * 100).toFixed(4)}%)`
+        : `Canlı funding arbitrajı (Funding ${(tk.fundingRate * 100).toFixed(4)}%)`;
+    } else if (tr.id === "mehmet" && (absChg >= 0.9 || absObi >= 0.28)) {
       side = tk.changePct24h < 0 ? "LONG" : "SHORT";
-      reason = `Fitil tepki taraması (${sym}, 24s ${tk.changePct24h.toFixed(2)}%)`;
-    } else if (tr.id === "sevil" && (absChg >= 1.4 || (absObi >= 0.25 && absFund >= 0.00003))) {
+      if (absChg >= 2.2) {
+        levOverride = fearLeft === 0 ? Math.min(50, baseLev + 5) : baseLev;
+        reason = `Erken fitil avı hatası — düşen bıçağa atladı (${sym}, 24s ${tk.changePct24h.toFixed(2)}%)`;
+      } else {
+        reason = `Fitil tepki taraması (${sym}, 24s ${tk.changePct24h.toFixed(2)}%)`;
+      }
+    } else if (tr.id === "sevil" && (absChg >= 1.3 || (absObi >= 0.25 && absFund >= 0.00003))) {
       side = tk.changePct24h > 1.0 ? "SHORT" : "LONG";
-      reason = `Ortalamaya dönüş disiplini (${sym})`;
+      if (absFund >= 0.00012 && fearLeft === 0) {
+        levOverride = Math.min(15, baseLev + 3);
+        reason = `Nadir hırs anı — kademeyi ${levOverride}x yaptı (Funding ${(tk.fundingRate * 100).toFixed(4)}%)`;
+      } else {
+        reason = `Soğukkanlı ortalamaya dönüş (${sym}, 24s ${tk.changePct24h.toFixed(2)}%)`;
+      }
     }
 
     if (side) {
-      const ok = await openPosition(db, tr, sym, side, tk.price, reason);
+      const ok = await openPosition(db, tr, sym, side, tk.price, reason, levOverride);
       if (ok) {
         openedCount++;
         openByTraderSym.add(`${tr.id}:${sym}`);
@@ -1026,6 +1097,29 @@ async function fetchRealHistoricalCandles(
   return { source: "okx_swap", candles: cleaned };
 }
 
+const lastCandleSyncMs = new Map<string, number>();
+
+async function persistLiveFundingSnapshots(
+  db: RestDb,
+  tickers: Record<string, MarketTicker>
+): Promise<void> {
+  const rows = Object.values(tickers)
+    .filter((tk) => tk.price > 0 && (tk.source === "binance_futures" || tk.source === "okx_swap"))
+    .map((tk) => ({
+      symbol: tk.symbol,
+      mark_price: tk.price,
+      funding_rate: tk.fundingRate,
+      next_funding_ms: tk.nextFundingMs,
+      imbalance: tk.imbalance,
+      change_pct_24h: tk.changePct24h,
+      source: tk.source,
+      updated_at: new Date().toISOString(),
+    }));
+  if (rows.length > 0) {
+    await db.upsert("market_funding_snapshots", rows).catch(() => {});
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
@@ -1038,7 +1132,7 @@ Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
   const action = url.searchParams.get("action") || "";
 
-  // Tur 3 (Sinan): Real Historical Candles endpoint (Binance Futures REST -> OKX Swap fallback)
+  // Tur 3+4 (Sinan + Kemal): Real Historical Candles endpoint + rate-limited DB vault persistence
   if (action === "candles" || url.pathname.endsWith("/candles")) {
     const rawSym = (url.searchParams.get("symbol") || "BTCUSDT").trim().toUpperCase();
     const rawIv = (url.searchParams.get("interval") || "1m").trim().toLowerCase();
@@ -1058,6 +1152,27 @@ Deno.serve(async (req: Request) => {
     const clampedLimit = Math.max(30, Math.min(200, Number.isFinite(rawLimit) ? Math.trunc(rawLimit) : 120));
     try {
       const { source, candles } = await fetchRealHistoricalCandles(rawSym, rawIv, clampedLimit);
+      // Kemal TAHTA: Rate-limited candle archive (max once per 30s per symbol+interval, latest 60 bars)
+      const cacheKey = `${rawSym}:${rawIv}`;
+      const nowMs = Date.now();
+      const prevSync = lastCandleSyncMs.get(cacheKey) ?? 0;
+      let persisted = false;
+      if (supabaseUrl && serviceKey && nowMs - prevSync >= 30_000) {
+        lastCandleSyncMs.set(cacheKey, nowMs);
+        const batch = candles.slice(-60).map((c) => ({
+          symbol: rawSym,
+          interval: rawIv,
+          ts: c.ts,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: c.volume,
+          source,
+        }));
+        await db.upsert("market_candles", batch).catch(() => {});
+        persisted = true;
+      }
       return new Response(
         JSON.stringify({
           status: "ok",
@@ -1065,6 +1180,7 @@ Deno.serve(async (req: Request) => {
           interval: rawIv,
           source,
           count: candles.length,
+          vault_persisted: persisted,
           candles,
           timestamp: new Date().toISOString(),
         }),
@@ -1086,6 +1202,9 @@ Deno.serve(async (req: Request) => {
 
   try {
     const { tickers, source } = await fetchLiveMarket();
+    if (supabaseUrl && serviceKey) {
+      await persistLiveFundingSnapshots(db, tickers);
+    }
 
     if (req.method === "GET" || action === "health" || url.pathname.endsWith("/health")) {
       const [openPos, activeDebts, traders] = await Promise.all([
@@ -1104,6 +1223,16 @@ Deno.serve(async (req: Request) => {
             BTCUSDT: tickers.BTCUSDT?.price ?? 0,
             ETHUSDT: tickers.ETHUSDT?.price ?? 0,
             SOLUSDT: tickers.SOLUSDT?.price ?? 0,
+          },
+          funding_rates: {
+            BTCUSDT: tickers.BTCUSDT?.fundingRate ?? 0,
+            ETHUSDT: tickers.ETHUSDT?.fundingRate ?? 0,
+            SOLUSDT: tickers.SOLUSDT?.fundingRate ?? 0,
+          },
+          next_funding_ms: {
+            BTCUSDT: tickers.BTCUSDT?.nextFundingMs ?? 0,
+            ETHUSDT: tickers.ETHUSDT?.nextFundingMs ?? 0,
+            SOLUSDT: tickers.SOLUSDT?.nextFundingMs ?? 0,
           },
           open_positions: openPos.length,
           active_debts: activeDebts.length,

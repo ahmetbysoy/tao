@@ -173,3 +173,42 @@ alter publication supabase_realtime add table public.debts;
 alter publication supabase_realtime add table public.positions;
 alter publication supabase_realtime add table public.events;
 alter publication supabase_realtime add table public.equity_snapshots;
+
+-- Tur 4 (Kemal TAHTA + Riza RADAR): Real market funding snapshots & OHLCV candle vault
+create table if not exists public.market_funding_snapshots (
+  symbol text primary key check (symbol in ('BTCUSDT', 'ETHUSDT', 'SOLUSDT')),
+  mark_price double precision not null check (mark_price > 0),
+  funding_rate double precision not null,
+  next_funding_ms bigint not null default 0,
+  imbalance double precision not null default 0,
+  change_pct_24h double precision not null default 0,
+  source text not null check (source in ('binance_futures', 'okx_swap')),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.market_candles (
+  symbol text not null check (symbol in ('BTCUSDT', 'ETHUSDT', 'SOLUSDT')),
+  interval text not null check (interval in ('1m', '5m', '15m', '1h')),
+  ts bigint not null check (ts > 0),
+  open double precision not null check (open > 0),
+  high double precision not null check (high > 0),
+  low double precision not null check (low > 0),
+  close double precision not null check (close > 0),
+  volume double precision not null default 0,
+  source text not null check (source in ('binance_fapi', 'okx_swap')),
+  recorded_at timestamptz not null default now(),
+  primary key (symbol, interval, ts)
+);
+
+create index if not exists idx_market_candles_lookup
+  on public.market_candles (symbol, interval, ts desc);
+
+alter table public.market_funding_snapshots enable row level security;
+alter table public.market_candles enable row level security;
+
+create policy "Public read market_funding_snapshots"
+  on public.market_funding_snapshots for select using (true);
+create policy "Public read market_candles"
+  on public.market_candles for select using (true);
+
+alter publication supabase_realtime add table public.market_funding_snapshots;
