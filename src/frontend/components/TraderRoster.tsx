@@ -54,11 +54,42 @@ const MOOD_STYLE: Record<
 };
 
 const AVATAR_ACCENT: Record<string, string> = {
-  selo: "from-rose-500 to-orange-500",
-  mehmet: "from-amber-400 to-red-500",
-  kemal: "from-emerald-400 to-teal-600",
-  nuri: "from-cyan-400 to-blue-600",
-  sevil: "from-violet-400 to-fuchsia-600",
+  selo: "from-rose-500 to-orange-500 border-rose-400/70",
+  mehmet: "from-amber-400 to-red-500 border-amber-400/70",
+  kemal: "from-emerald-400 to-teal-600 border-emerald-400/70",
+  nuri: "from-cyan-400 to-blue-600 border-cyan-400/70",
+  sevil: "from-violet-400 to-fuchsia-600 border-violet-400/70",
+};
+
+const TRADER_FX_META: Record<
+  string,
+  { badge: string; cardFx: string; badgeClass: string }
+> = {
+  selo: {
+    badge: "ROKET ATEŞİ",
+    cardFx: "fx-rocket-flame",
+    badgeClass: "border-rose-500/40 bg-rose-950/50 text-rose-300",
+  },
+  mehmet: {
+    badge: "FİTİL RADARI",
+    cardFx: "",
+    badgeClass: "border-amber-500/40 bg-amber-950/50 text-amber-300",
+  },
+  kemal: {
+    badge: "X-RAY TAHTA",
+    cardFx: "",
+    badgeClass: "border-emerald-500/40 bg-emerald-950/50 text-emerald-300",
+  },
+  nuri: {
+    badge: "FONLAMA NABZI",
+    cardFx: "",
+    badgeClass: "border-cyan-500/40 bg-cyan-950/50 text-cyan-300",
+  },
+  sevil: {
+    badge: "BOLLINGER AURA",
+    cardFx: "fx-bollinger-aura",
+    badgeClass: "border-violet-500/40 bg-violet-950/50 text-violet-300",
+  },
 };
 
 const SWIPE_COLLECT_THRESHOLD_PX = 84;
@@ -102,14 +133,16 @@ const SwipeableTraderCard: React.FC<SwipeableTraderCardProps> = ({
   const estCollect = canCollect ? Math.min(t.balance * 0.5, activeDebtAmount) : 0;
 
   const moodCfg = MOOD_STYLE[t.mood] ?? MOOD_STYLE.focused;
+  const fxMeta = TRADER_FX_META[t.id] ?? TRADER_FX_META.selo;
   const totalTrades = t.win_count + t.loss_count;
   const winRate = totalTrades > 0 ? Math.round((t.win_count / totalTrades) * 100) : 0;
-  const initials = t.nickname
-    .split(" ")
-    .map((w) => w[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
+  const isFearMode = t.fear_trades_remaining > 0;
+  const cardFxClass =
+    t.id === "selo" && (openCount > 0 || t.mood === "greedy")
+      ? fxMeta.cardFx
+      : t.id === "sevil" && t.mood !== "busted"
+      ? fxMeta.cardFx
+      : "";
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!canCollect) return;
@@ -198,28 +231,57 @@ const SwipeableTraderCard: React.FC<SwipeableTraderCardProps> = ({
           transform: `translate3d(${swipeX}px, 0, 0)`,
           transition: swiping ? "none" : "transform 200ms cubic-bezier(0.22, 1, 0.36, 1)",
         }}
-        className={`relative flex flex-col justify-between rounded-xl border bg-zinc-950 p-3.5 touch-pan-y select-none ${
+        className={`relative flex flex-col justify-between overflow-hidden rounded-xl border bg-zinc-950 p-3.5 touch-pan-y select-none ${
           moodCfg.ring
-        } ${flashNonce ? "trader-liq-flash" : ""}`}
+        } ${cardFxClass} ${flashNonce ? "trader-liq-flash" : ""}`}
       >
+        {/* Tahta Kemal X-Ray Scan Beam */}
+        {t.id === "kemal" && (
+          <div
+            aria-hidden="true"
+            className="fx-xray-scan pointer-events-none absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-emerald-400/12 to-transparent"
+          />
+        )}
+
+        {/* Fear Mode Yellow/Black Hazard Tape Top Edge */}
+        {isFearMode && (
+          <div
+            aria-hidden="true"
+            className="hazard-tape-banner absolute inset-x-0 top-0 h-1.5"
+          />
+        )}
+
         <div>
-          {/* Header row */}
+          {/* Header row with Cyberpunk WebP Avatar */}
           <div className="flex items-start justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2.5">
               <div
-                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br font-display text-xs font-black text-black shadow ${
-                  AVATAR_ACCENT[t.id] ?? "from-zinc-400 to-zinc-600"
+                className={`relative h-12 w-12 shrink-0 overflow-hidden rounded-xl border-2 bg-gradient-to-br shadow-lg ${
+                  AVATAR_ACCENT[t.id] ?? "from-zinc-400 to-zinc-600 border-zinc-500"
                 }`}
               >
-                {initials}
+                <img
+                  src={`/avatars/${t.id}.webp`}
+                  alt={t.nickname}
+                  loading="lazy"
+                  className="h-full w-full object-cover"
+                />
+                {openCount > 0 && (
+                  <span className="absolute right-0.5 bottom-0.5 h-2.5 w-2.5 rounded-full border border-black bg-emerald-400 shadow-[0_0_8px_#34d399]" />
+                )}
               </div>
               <div className="min-w-0">
                 <div className="truncate font-display text-sm font-bold text-white">
                   {t.nickname}
                 </div>
-                <div className="truncate text-[10px] text-zinc-500">
+                <div className="truncate text-[10px] text-zinc-400">
                   {t.archetype}
                 </div>
+                <span
+                  className={`mt-0.5 inline-block rounded border px-1 py-0.2 font-mono text-[8px] font-black uppercase ${fxMeta.badgeClass}`}
+                >
+                  {fxMeta.badge}
+                </span>
               </div>
             </div>
             <span
@@ -240,16 +302,19 @@ const SwipeableTraderCard: React.FC<SwipeableTraderCardProps> = ({
             </div>
           )}
 
-          {/* Fear Mode Banner */}
-          {t.fear_trades_remaining > 0 && (
-            <div className="mt-2 flex items-center justify-between rounded-md border border-fuchsia-500/40 bg-fuchsia-950/50 px-2 py-1 text-[10px] font-bold text-fuchsia-200">
-              <span className="inline-flex items-center gap-1">
-                <ShieldAlert className="h-3 w-3 text-fuchsia-400" />
-                KORKU MODU
-              </span>
-              <span className="font-mono">
-                {t.fear_trades_remaining} işlem 1/2x
-              </span>
+          {/* Fear Mode Hazard Banner */}
+          {isFearMode && (
+            <div className="mt-2 overflow-hidden rounded-md border border-yellow-400/60 bg-zinc-950">
+              <div className="hazard-tape-banner h-1.5 w-full" />
+              <div className="flex items-center justify-between bg-amber-950/55 px-2 py-1 text-[10px] font-black text-yellow-200">
+                <span className="inline-flex items-center gap-1">
+                  <ShieldAlert className="h-3 w-3 animate-pulse text-yellow-400" />
+                  ÇIRAK KAPIDA · KORKU MODU
+                </span>
+                <span className="font-mono">
+                  {t.fear_trades_remaining} işlem 1/2x
+                </span>
+              </div>
             </div>
           )}
 

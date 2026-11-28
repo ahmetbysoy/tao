@@ -3,9 +3,9 @@ import {
   Activity,
   BadgePlus,
   Database,
-  Flame,
   Mic,
   MicOff,
+  Monitor,
   Radio,
   Smartphone,
   Volume2,
@@ -31,12 +31,14 @@ interface TerminalHeaderProps {
   ttsOn: boolean;
   hapticsOn: boolean;
   shakeOn: boolean;
+  crtOn: boolean;
   activeTab: NavTab;
   onSelectTab: (tab: NavTab) => void;
   onToggleSfx: () => void;
   onToggleTts: () => void;
   onToggleHaptics: () => void;
   onToggleShake: () => void;
+  onToggleCrt: () => void;
   onOpenLoanModal: () => void;
   onTriggerPulse: () => void;
   triggerBusy: boolean;
@@ -59,12 +61,14 @@ export const TerminalHeader: React.FC<TerminalHeaderProps> = ({
   ttsOn,
   hapticsOn,
   shakeOn,
+  crtOn,
   activeTab,
   onSelectTab,
   onToggleSfx,
   onToggleTts,
   onToggleHaptics,
   onToggleShake,
+  onToggleCrt,
   onOpenLoanModal,
   onTriggerPulse,
   triggerBusy,
@@ -82,8 +86,12 @@ export const TerminalHeader: React.FC<TerminalHeaderProps> = ({
         {/* Top Row on Mobile: Brand + Status Pills + Primary Actions */}
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2.5">
-            <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-amber-500/40 bg-gradient-to-br from-amber-500/20 to-red-600/20 shadow-[0_0_20px_rgba(245,158,11,0.2)]">
-              <Flame className="h-5 w-5 text-amber-400" />
+            <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-xl border border-amber-500/60 bg-black shadow-[0_0_20px_rgba(245,158,11,0.28)]">
+              <img
+                src="/avatars/tefeci.webp"
+                alt="Patron Tefeci"
+                className="h-full w-full object-cover"
+              />
               <span className="pulse-ring absolute inset-0 rounded-xl border border-amber-400/40" />
             </div>
             <div className="min-w-0">
@@ -92,8 +100,8 @@ export const TerminalHeader: React.FC<TerminalHeaderProps> = ({
                   TEFECİ <span className="text-amber-400">//</span>{" "}
                   <span className="text-red-500">CANLI</span>
                 </h1>
-                <span className="rounded border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[9px] font-bold text-emerald-300">
-                  TUR 1
+                <span className="rounded border border-amber-500/45 bg-amber-500/15 px-1.5 py-0.5 font-mono text-[9px] font-bold text-amber-300">
+                  NEO V5
                 </span>
               </div>
               {/* Live status pills */}
@@ -319,6 +327,21 @@ export const TerminalHeader: React.FC<TerminalHeaderProps> = ({
             >
               <Smartphone className="h-4 w-4" />
               <span className="lg:hidden">Haptik</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onToggleCrt}
+              aria-pressed={crtOn}
+              title={crtOn ? "Retro CRT Tarama Çizgisini Kapat" : "Retro CRT Tarama Çizgisini Aç"}
+              className={`flex min-h-[44px] flex-1 cursor-pointer items-center justify-center gap-1 rounded-xl border px-2 text-[11px] font-bold transition active:scale-95 lg:min-w-[44px] lg:flex-none ${
+                crtOn
+                  ? "border-fuchsia-500/50 bg-fuchsia-500/15 text-fuchsia-300"
+                  : "border-zinc-800 bg-zinc-900 text-zinc-500"
+              }`}
+            >
+              <Monitor className="h-4 w-4" />
+              <span className="lg:hidden">CRT</span>
             </button>
           </div>
         </div>

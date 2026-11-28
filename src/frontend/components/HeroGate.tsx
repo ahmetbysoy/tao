@@ -10,11 +10,11 @@ interface HeroGateProps {
 }
 
 const PREVIEW_TRADERS = [
-  { name: "Selo Roket", tag: "75x Tilt & Hacim · Erkek TTS", color: "text-rose-400 border-rose-500/30 bg-rose-950/30" },
-  { name: "Fitilci Mehmet", tag: "50x Fitil Avcısı · Erkek TTS", color: "text-amber-400 border-amber-500/30 bg-amber-950/30" },
-  { name: "Fonlama Nuri", tag: "25x Canlı Funding · Erkek TTS", color: "text-cyan-400 border-cyan-500/30 bg-cyan-950/30" },
-  { name: "Tahta Kemal", tag: "20x OBI Tahta · Erkek TTS", color: "text-emerald-400 border-emerald-500/30 bg-emerald-950/30" },
-  { name: "Madam Sevil", tag: "10x Disiplin · Kadın TTS", color: "text-violet-400 border-violet-500/30 bg-violet-950/30" },
+  { id: "selo", name: "Selo Roket", tag: "75x Tilt & Hacim · Erkek TTS", color: "text-rose-400 border-rose-500/35 bg-rose-950/30" },
+  { id: "mehmet", name: "Fitilci Mehmet", tag: "50x Fitil Avcısı · Erkek TTS", color: "text-amber-400 border-amber-500/35 bg-amber-950/30" },
+  { id: "nuri", name: "Fonlama Nuri", tag: "25x Canlı Funding · Erkek TTS", color: "text-cyan-400 border-cyan-500/35 bg-cyan-950/30" },
+  { id: "kemal", name: "Tahta Kemal", tag: "20x OBI Tahta · Erkek TTS", color: "text-emerald-400 border-emerald-500/35 bg-emerald-950/30" },
+  { id: "sevil", name: "Madam Sevil", tag: "10x Disiplin · Kadın TTS", color: "text-violet-400 border-violet-500/35 bg-violet-950/30" },
 ];
 
 export const HeroGate: React.FC<HeroGateProps> = ({
@@ -111,12 +111,22 @@ export const HeroGate: React.FC<HeroGateProps> = ({
           </p>
         </div>
 
-        {/* Trader preview chips */}
+        {/* Trader preview chips with custom cyberpunk WebP portraits */}
         <div className="flex flex-wrap justify-center gap-2">
           {PREVIEW_TRADERS.map((t) => (
-            <div key={t.name} className={`rounded-lg border px-2.5 py-1.5 text-[11px] ${t.color}`}>
-              <span className="font-bold">{t.name}</span>{" "}
-              <span className="opacity-75">· {t.tag}</span>
+            <div
+              key={t.id}
+              className={`inline-flex items-center gap-2 rounded-xl border px-2.5 py-1.5 text-[11px] shadow-md ${t.color}`}
+            >
+              <img
+                src={`/avatars/${t.id}.webp`}
+                alt={t.name}
+                className="h-7 w-7 rounded-lg border border-white/20 object-cover"
+              />
+              <div className="text-left leading-tight">
+                <div className="font-bold">{t.name}</div>
+                <div className="text-[9px] opacity-80">{t.tag}</div>
+              </div>
             </div>
           ))}
         </div>

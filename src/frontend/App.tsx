@@ -12,6 +12,12 @@ import { MahalleKupasi } from "./components/MahalleKupasi";
 import { CandleReplay } from "./components/CandleReplay";
 import { SimulationDisclaimerBanner } from "./components/SimulationDisclaimerBanner";
 import { YeraltiKahvehaneMap } from "./components/YeraltiKahvehaneMap";
+import { IsometricKahvehaneCanvas } from "./components/IsometricKahvehaneCanvas";
+import { DebtNetworkGraph } from "./components/DebtNetworkGraph";
+import { LiquidationHeatmap } from "./components/LiquidationHeatmap";
+import { LiveCandlestickBoard } from "./components/LiveCandlestickBoard";
+import { OrderbookDepthVisualizer } from "./components/OrderbookDepthVisualizer";
+import { TraderRadarChart } from "./components/TraderRadarChart";
 import { FitilAvi } from "./components/FitilAvi";
 import { KpiBar } from "./components/KpiBar";
 import { LiveEquityChart } from "./components/LiveEquityChart";
@@ -146,11 +152,21 @@ export default function App() {
   const [fitilStats, setFitilStats] = useState<FitilStats>(() => loadFitilStats());
   const cancelledRoundsRef = useRef<number>(0);
 
-  // Controls & settings (Hayri + Ece)
+  // Controls & settings (Hayri + Ece + Visual Revolution CRT & Command FX Matrix)
   const [sfxOn, setSfxOn] = useState<boolean>(() => isSfxEnabled());
   const [ttsOn, setTtsOn] = useState<boolean>(() => isTtsEnabled());
   const [hapticsOn, setHapticsOn] = useState<boolean>(() => isHapticsEnabled());
   const [shakeOn, setShakeOn] = useState<boolean>(() => isShakeEnabled());
+  const [crtOn, setCrtOn] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("tefeci_crt_scanlines") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [goldShockwaveKey, setGoldShockwaveKey] = useState<number>(0);
+  const [crimsonOverdriveActive, setCrimsonOverdriveActive] = useState<boolean>(false);
+  const [slotFlashKey, setSlotFlashKey] = useState<number>(0);
 
   // Drawers & overlays
   const [loanModalOpen, setLoanModalOpen] = useState(false);
@@ -747,6 +763,10 @@ export default function App() {
     setTriggerBusy(true);
     hapticShort();
     playClick();
+    if (shakeOnRef.current) {
+      setCrimsonOverdriveActive(true);
+      window.setTimeout(() => setCrimsonOverdriveActive(false), 520);
+    }
     await pushCommand(
       "TRIGGER_TEST_TRADE",
       traderId ?? "",
@@ -775,6 +795,7 @@ export default function App() {
     }
     hapticMedium();
     playCashRegister();
+    setSlotFlashKey((k) => k + 1);
     speakStreetEvent("tefeci", "debt_pressure", amount + bal);
     pushCommand(
       "COLLECT_DEBT",
@@ -787,6 +808,18 @@ export default function App() {
       `${trader.nickname} kasasından $${amount.toFixed(2)} çekiliyor.`,
       "success"
     );
+  };
+
+  const handleToggleCrt = () => {
+    const next = !crtOn;
+    setCrtOn(next);
+    try {
+      window.localStorage.setItem("tefeci_crt_scanlines", next ? "1" : "0");
+    } catch {
+      // Ignore storage failures
+    }
+    hapticShort();
+    playClick();
   };
 
   const handleToggleSfx = () => {
@@ -941,6 +974,7 @@ export default function App() {
       whalePanicActive={whalePanicActive}
       whaleBannerText={whaleBannerText}
       onDoubleInterest={(debt) => {
+        setGoldShockwaveKey((k) => k + 1);
         pushCommand(
           "DOUBLE_INTEREST",
           debt.traderId,
@@ -963,6 +997,7 @@ export default function App() {
         );
       }}
       onCollectDebt={(debt) => {
+        setSlotFlashKey((k) => k + 1);
         const amount =
           Math.round(Math.min(debt.traderBalance * 0.5, debt.owedUsdt) * 100) / 100;
         pushCommand(
@@ -1002,6 +1037,7 @@ export default function App() {
       binanceConnected={binanceConnected}
       onForceClose={(pos) => {
         playClick();
+        setSlotFlashKey((k) => k + 1);
         pushCommand(
           "FORCE_CLOSE",
           pos.traderId,
@@ -1015,6 +1051,39 @@ export default function App() {
         );
       }}
       onTriggerPulse={() => handleTriggerPulse()}
+    />
+  );
+
+  const debtNetworkGraphSection = (
+    <DebtNetworkGraph
+      traders={traders}
+      debts={debtRows}
+      openPnlByTrader={openPnlByTrader}
+      tefeciProfit={tefeciProfit}
+      shockwaveKey={goldShockwaveKey}
+      onDoubleInterest={(debtId, traderId, nickname) => {
+        setGoldShockwaveKey((k) => k + 1);
+        playClick();
+        pushCommand(
+          "DOUBLE_INTEREST",
+          traderId,
+          `${nickname} senet faizi 2'ye katlandı!`,
+          { debt_id: debtId }
+        );
+        addToast("Faiz Katlandı!", `${nickname} borç ağı lazeri 2 katına çıktı!`, "danger");
+      }}
+      onSendEnforcer={(debtId, traderId, nickname) => {
+        playEnforcerKnock();
+        speakAs("tefeci", `Çırağı ${nickname}'in kapısına saldım!`);
+        pushCommand(
+          "SEND_ENFORCER",
+          traderId,
+          `Çırak ${nickname}'in kapısına gönderildi!`,
+          { trader_id: traderId, ...(debtId ? { debt_id: debtId } : {}) }
+        );
+        addToast("Çırak Yola Çıktı", `${nickname} korku moduna girdi!`, "gold");
+      }}
+      onCollectDebt={(trader, debt) => handleCollectFromTrader(trader, debt)}
     />
   );
 
@@ -1047,8 +1116,27 @@ export default function App() {
     <div
       className={`min-h-screen overflow-x-clip pb-24 text-zinc-100 lg:pb-12 ${
         microShakeActive ? "liq-micro-shake" : ""
-      }`}
+      } ${crimsonOverdriveActive ? "fx-crimson-overdrive" : ""}`}
     >
+      {/* Retro-Arcade CRT Scanline Overlay (Toggleable from Header) */}
+      {crtOn && <div aria-hidden="true" className="crt-scanlines-overlay" />}
+
+      {/* Command FX Matrix: FAİZİ KATLA Golden Shockwave */}
+      {goldShockwaveKey > 0 && (
+        <div
+          key={`gold-${goldShockwaveKey}`}
+          className="fx-gold-shockwave pointer-events-none fixed inset-0 z-50 rounded-none border-4 border-amber-400/70"
+        />
+      )}
+
+      {/* Command FX Matrix: TAHSİL ET / ZORLA KAPAT Emerald Slot Counter Flash */}
+      {slotFlashKey > 0 && (
+        <div
+          key={`slot-${slotFlashKey}`}
+          className="fx-slot-flash pointer-events-none fixed inset-0 z-50 border-4 border-emerald-400/60"
+        />
+      )}
+
       {/* 0.5-Second Blood-Red Whale Alert Flash Overlay */}
       {whaleFlashKey > 0 && (
         <div
@@ -1102,6 +1190,7 @@ export default function App() {
         ttsOn={ttsOn}
         hapticsOn={hapticsOn}
         shakeOn={shakeOn}
+        crtOn={crtOn}
         activeTab={activeTab}
         onSelectTab={(tab) => {
           setActiveTab(tab);
@@ -1111,6 +1200,7 @@ export default function App() {
         onToggleTts={handleToggleTts}
         onToggleHaptics={handleToggleHaptics}
         onToggleShake={handleToggleShake}
+        onToggleCrt={handleToggleCrt}
         onOpenLoanModal={() => {
           playClick();
           setLoanModalOpen(true);
@@ -1125,10 +1215,42 @@ export default function App() {
         {/* Global Whale Panic shortcut banner if user is on Traders tab */}
         {whalePanicActive && activeTab === "traders" && darkPatternDesk}
 
-        {/* TAB 1: PİYASA (Market) */}
+        {/* TAB 1: PİYASA (Market — Visual Revolution Quant War Room) */}
         {activeTab === "market" && (
           <>
             {liquidationBanner}
+
+            {/* Faz 1: 2.5D İzometrik Yeraltı Kahvehanesi Canvas (60 FPS + Chip Stacks + Alev) */}
+            <IsometricKahvehaneCanvas
+              traders={traders}
+              openPositions={openPositions}
+              debts={debtRows}
+              openPnlByTrader={openPnlByTrader}
+              recentLiqTraders={flashingTraderIds}
+              livePrices={livePrices}
+              tefeciProfit={tefeciProfit}
+            />
+
+            {/* Faz 3: TradingView Canlı Mum Grafiği + Trader Pozisyon Katmanı */}
+            <LiveCandlestickBoard
+              openPositions={openPositions}
+              closedLedger={closedLedger}
+              livePrices={livePrices}
+              binanceConnected={binanceConnected}
+            />
+
+            {/* Faz 3 + Faz 2: Tahta Kemal OBI X-Ray & Likidasyon Duvarı Isı Haritası */}
+            <section className="grid gap-4 lg:grid-cols-12">
+              <div className="min-w-0 lg:col-span-7">
+                <OrderbookDepthVisualizer fundingSnapshots={fundingSnapshots} />
+              </div>
+              <div className="min-w-0 lg:col-span-5">
+                <LiquidationHeatmap
+                  openPositions={openPositions}
+                  livePrices={livePrices}
+                />
+              </div>
+            </section>
 
             {/* Sevil DOPAMİN + Rıza RADAR: Yeraltı Kahvehanesi & Döviz Bürosu Canlı Haritası */}
             <YeraltiKahvehaneMap
@@ -1160,6 +1282,9 @@ export default function App() {
 
             {/* Keep DarkPatternAlerts prominent on Market */}
             {darkPatternDesk}
+
+            {/* Faz 2: Canlı İnteraktif Borç Ağı (Node Graph) */}
+            {debtNetworkGraphSection}
 
             {/* Rıza: Live Debt Endurance Timers */}
             <DebtEndurancePanel
@@ -1218,15 +1343,18 @@ export default function App() {
         {/* TAB 2: TRADERLAR (Traders) */}
         {activeTab === "traders" && (
           <>
-            <YeraltiKahvehaneMap
+            <IsometricKahvehaneCanvas
               traders={traders}
               openPositions={openPositions}
               debts={debtRows}
-              livePrices={livePrices}
-              fundingSnapshots={fundingSnapshots}
-              binanceConnected={binanceConnected}
               openPnlByTrader={openPnlByTrader}
               recentLiqTraders={flashingTraderIds}
+              livePrices={livePrices}
+              tefeciProfit={tefeciProfit}
+            />
+            <TraderRadarChart
+              traders={traders}
+              openPnlByTrader={openPnlByTrader}
             />
             <LiveQuotesTicker
               quotes={liveQuotes}
@@ -1260,9 +1388,16 @@ export default function App() {
           </>
         )}
 
-        {/* TAB 4: SENETLER (DarkPatternAlerts + DebtEndurance + BottomSheet DebtLedger) */}
+        {/* TAB 4: SENETLER (DebtNetworkGraph + LiquidationHeatmap + DarkPatternAlerts + DebtEndurance + BottomSheet DebtLedger) */}
         {activeTab === "debts" && (
           <>
+            {debtNetworkGraphSection}
+
+            <LiquidationHeatmap
+              openPositions={openPositions}
+              livePrices={livePrices}
+            />
+
             {darkPatternDesk}
 
             <DebtEndurancePanel
