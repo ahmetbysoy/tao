@@ -14,6 +14,7 @@ import {
 import { hapticMedium, hapticShort } from "../utils/haptics";
 import { DebtRow, TraderRow } from "../utils/supabase";
 import { TraderVoiceId } from "../utils/tts";
+import { getTraderAvatarSrc, isTraderInFearVisualState } from "../utils/avatars";
 
 interface TraderRosterProps {
   traders: TraderRow[];
@@ -137,6 +138,8 @@ const SwipeableTraderCard: React.FC<SwipeableTraderCardProps> = ({
   const totalTrades = t.win_count + t.loss_count;
   const winRate = totalTrades > 0 ? Math.round((t.win_count / totalTrades) * 100) : 0;
   const isFearMode = t.fear_trades_remaining > 0;
+  const isFearVisual = isTraderInFearVisualState(t);
+  const avatarSrc = getTraderAvatarSrc(t.id, isFearVisual);
   const cardFxClass =
     t.id === "selo" && (openCount > 0 || t.mood === "greedy")
       ? fxMeta.cardFx
@@ -256,18 +259,26 @@ const SwipeableTraderCard: React.FC<SwipeableTraderCardProps> = ({
           <div className="flex items-start justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2.5">
               <div
-                className={`relative h-12 w-12 shrink-0 overflow-hidden rounded-xl border-2 bg-gradient-to-br shadow-lg ${
-                  AVATAR_ACCENT[t.id] ?? "from-zinc-400 to-zinc-600 border-zinc-500"
+                className={`relative h-12 w-12 shrink-0 overflow-hidden rounded-xl border-2 bg-gradient-to-br shadow-lg transition-all ${
+                  isFearVisual
+                    ? "border-yellow-400 from-red-600 to-yellow-500 shadow-[0_0_16px_rgba(250,204,21,0.55)]"
+                    : AVATAR_ACCENT[t.id] ?? "from-zinc-400 to-zinc-600 border-zinc-500"
                 }`}
               >
                 <img
-                  src={`/avatars/${t.id}.webp`}
+                  src={avatarSrc}
                   alt={t.nickname}
                   loading="lazy"
                   className="h-full w-full object-cover"
                 />
                 {openCount > 0 && (
-                  <span className="absolute right-0.5 bottom-0.5 h-2.5 w-2.5 rounded-full border border-black bg-emerald-400 shadow-[0_0_8px_#34d399]" />
+                  <span
+                    className={`absolute right-0.5 bottom-0.5 h-2.5 w-2.5 rounded-full border border-black ${
+                      isFearVisual
+                        ? "bg-yellow-400 shadow-[0_0_8px_#facc15]"
+                        : "bg-emerald-400 shadow-[0_0_8px_#34d399]"
+                    }`}
+                  />
                 )}
               </div>
               <div className="min-w-0">

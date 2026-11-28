@@ -285,6 +285,47 @@
   animation: rocketFlameGlow 1.1s ease-in-out infinite;
 }
 
+@keyframes cyberGlitchBurst {
+  0% { transform: translate(0, 0) skewX(0deg); filter: hue-rotate(0deg) contrast(1); }
+  14% { transform: translate(-5px, 2px) skewX(-3deg); filter: hue-rotate(35deg) contrast(1.45) saturate(1.7); }
+  28% { transform: translate(6px, -3px) skewX(4deg); filter: hue-rotate(-40deg) contrast(1.55); }
+  45% { transform: translate(-4px, -2px) skewX(-2deg); filter: hue-rotate(25deg) contrast(1.3); }
+  65% { transform: translate(4px, 3px) skewX(2deg); filter: hue-rotate(-20deg) contrast(1.25); }
+  82% { transform: translate(-2px, 1px) skewX(-1deg); filter: hue-rotate(10deg) contrast(1.1); }
+  100% { transform: translate(0, 0) skewX(0deg); filter: hue-rotate(0deg) contrast(1); }
+}
+
+@keyframes glitchSliceFade {
+  0% { opacity: 0.9; transform: translateX(-10px); }
+  30% { opacity: 0.75; transform: translateX(12px); }
+  60% { opacity: 0.45; transform: translateX(-6px); }
+  100% { opacity: 0; transform: translateX(0); }
+}
+
+.fx-cyber-glitch {
+  animation: cyberGlitchBurst 0.62s steps(2, end) 1;
+}
+
+.cyber-glitch-overlay {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 65;
+  background:
+    linear-gradient(
+      to bottom,
+      transparent 0%,
+      rgba(239, 68, 68, 0.24) 16%,
+      transparent 19%,
+      rgba(34, 211, 238, 0.22) 48%,
+      transparent 52%,
+      rgba(217, 70, 239, 0.22) 78%,
+      transparent 82%
+    );
+  mix-blend-mode: screen;
+  animation: glitchSliceFade 0.62s ease-out forwards;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .liq-micro-shake,
   .pnl-loss,
@@ -296,7 +337,9 @@
   .fx-slot-flash,
   .fx-xray-scan,
   .fx-bollinger-aura,
-  .fx-rocket-flame {
+  .fx-rocket-flame,
+  .fx-cyber-glitch,
+  .cyber-glitch-overlay {
     animation: none !important;
   }
 }

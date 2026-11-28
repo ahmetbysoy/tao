@@ -4,6 +4,7 @@ import { DebtRow, TraderRow } from "../utils/supabase";
 import { hapticMedium, hapticShort } from "../utils/haptics";
 import { playClick } from "../utils/sfx";
 import { TraderVoiceId } from "../utils/tts";
+import { getTraderAvatarSrc, isTraderInFearVisualState } from "../utils/avatars";
 
 interface DebtNetworkGraphProps {
   traders: TraderRow[];
@@ -256,7 +257,10 @@ export const DebtNetworkGraph: React.FC<DebtNetworkGraphProps> = ({
                   />
                 )}
                 <image
-                  href={`/avatars/${n.trader.id}.webp`}
+                  href={getTraderAvatarSrc(
+                    n.trader.id,
+                    isTraderInFearVisualState(n.trader) || n.overdue
+                  )}
                   x={n.x - (n.radius - 2)}
                   y={n.y - (n.radius - 2)}
                   width={(n.radius - 2) * 2}

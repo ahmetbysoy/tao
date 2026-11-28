@@ -12,12 +12,19 @@ import { MahalleKupasi } from "./components/MahalleKupasi";
 import { CandleReplay } from "./components/CandleReplay";
 import { SimulationDisclaimerBanner } from "./components/SimulationDisclaimerBanner";
 import { YeraltiKahvehaneMap } from "./components/YeraltiKahvehaneMap";
-import { IsometricKahvehaneCanvas } from "./components/IsometricKahvehaneCanvas";
+import {
+  IsometricKahvehaneCanvas,
+  KahvehaneFxEvent,
+} from "./components/IsometricKahvehaneCanvas";
 import { DebtNetworkGraph } from "./components/DebtNetworkGraph";
 import { LiquidationHeatmap } from "./components/LiquidationHeatmap";
 import { LiveCandlestickBoard } from "./components/LiveCandlestickBoard";
 import { OrderbookDepthVisualizer } from "./components/OrderbookDepthVisualizer";
 import { TraderRadarChart } from "./components/TraderRadarChart";
+import { LiquidationRadarVisualizer } from "./components/LiquidationRadarVisualizer";
+import { FundingOIMatrix } from "./components/FundingOIMatrix";
+import { WantedLedgerCards } from "./components/WantedLedgerCards";
+import { TraderRacetrackGauge } from "./components/TraderRacetrackGauge";
 import { FitilAvi } from "./components/FitilAvi";
 import { KpiBar } from "./components/KpiBar";
 import { LiveEquityChart } from "./components/LiveEquityChart";
@@ -167,6 +174,36 @@ export default function App() {
   const [goldShockwaveKey, setGoldShockwaveKey] = useState<number>(0);
   const [crimsonOverdriveActive, setCrimsonOverdriveActive] = useState<boolean>(false);
   const [slotFlashKey, setSlotFlashKey] = useState<number>(0);
+  const [cyberGlitchKey, setCyberGlitchKey] = useState<number>(0);
+  const [cyberGlitchActive, setCyberGlitchActive] = useState<boolean>(false);
+  const [kahvehaneFxEvents, setKahvehaneFxEvents] = useState<KahvehaneFxEvent[]>([]);
+  const fxIdRef = useRef<number>(0);
+  const glitchTimerRef = useRef<number | null>(null);
+
+  const triggerCyberGlitch = useCallback(() => {
+    if (!shakeOnRef.current) return;
+    setCyberGlitchKey((k) => k + 1);
+    setCyberGlitchActive(true);
+    if (glitchTimerRef.current) window.clearTimeout(glitchTimerRef.current);
+    glitchTimerRef.current = window.setTimeout(() => {
+      setCyberGlitchActive(false);
+    }, 640);
+  }, []);
+
+  const triggerKahvehaneFx = useCallback(
+    (type: "enforcer" | "collect", traderId: string, amount?: number) => {
+      fxIdRef.current += 1;
+      const ev: KahvehaneFxEvent = {
+        id: fxIdRef.current,
+        type,
+        traderId,
+        amount,
+        createdAtMs: Date.now(),
+      };
+      setKahvehaneFxEvents((prev) => [...prev.slice(-6), ev]);
+    },
+    []
+  );
 
   // Drawers & overlays
   const [loanModalOpen, setLoanModalOpen] = useState(false);
@@ -555,9 +592,15 @@ export default function App() {
           if (ev.type === "WHALE_ALERT") {
             const sym = String(ev.payload?.symbol ?? "BTCUSDT");
             const notional = Number(ev.payload?.notional_usdt ?? 1_000_000);
+            triggerCyberGlitch();
             triggerWhaleManipulator(sym, notional, ev.message);
           } else if (ev.type === "LIQUIDATION") {
             setLiqFlashKey(Date.now());
+            // High-leverage (Selo Roket / Fitilci Mehmet / >=50x) Cyberpunk Glitch FX!
+            const lev = Number(ev.payload?.leverage ?? 0);
+            if (speakerId === "selo" || speakerId === "mehmet" || lev >= 50) {
+              triggerCyberGlitch();
+            }
             hapticLong();
             playLiquidationSiren();
             confetti({
@@ -583,10 +626,16 @@ export default function App() {
             const pnl = Number(ev.payload?.pnl ?? 0);
             if (pnl >= 0) {
               playCashRegister();
+              if ((speakerId === "selo" && pnl >= 40) || pnl >= 120) {
+                triggerCyberGlitch();
+              }
               if (pnl >= 15) {
                 speakStreetEvent(speakerId, "big_profit", ev.id + pnl, true);
               }
             } else if (pnl <= -15) {
+              if (speakerId === "selo" && pnl <= -60) {
+                triggerCyberGlitch();
+              }
               speakStreetEvent(speakerId, "big_loss", ev.id + Math.abs(pnl), true);
             }
             addToast("Pozisyon Kapandı", ev.message, pnl >= 0 ? "success" : "danger");
@@ -613,7 +662,7 @@ export default function App() {
       unsubFunding();
       unsubEvents();
     };
-  }, [entered, addToast, triggerWhaleManipulator]);
+  }, [entered, addToast, triggerWhaleManipulator, triggerCyberGlitch]);
 
   const livePrices = useMemo(() => {
     const out: Record<string, number> = {};
@@ -636,6 +685,7 @@ export default function App() {
     closedLedger,
     openPnlByTrader,
     openCountByTrader,
+    lockedMarginByTrader,
     totalUnrealizedPnl,
     lockedMargin,
   } = useMemo(() => {
@@ -643,6 +693,7 @@ export default function App() {
     const closedList: LedgerEntry[] = [];
     const pnlMap: Record<string, number> = {};
     const countMap: Record<string, number> = {};
+    const lockedMap: Record<string, number> = {};
     let sumUnrealized = 0;
     let sumLocked = 0;
 
@@ -675,6 +726,7 @@ export default function App() {
         sumLocked += pos.isolatedMargin;
         pnlMap[pos.traderId] = (pnlMap[pos.traderId] ?? 0) + upnl;
         countMap[pos.traderId] = (countMap[pos.traderId] ?? 0) + 1;
+        lockedMap[pos.traderId] = (lockedMap[pos.traderId] ?? 0) + pos.isolatedMargin;
       } else {
         closedList.push({
           positionId: row.id,
@@ -699,6 +751,7 @@ export default function App() {
       closedLedger: closedList,
       openPnlByTrader: pnlMap,
       openCountByTrader: countMap,
+      lockedMarginByTrader: lockedMap,
       totalUnrealizedPnl: sumUnrealized,
       lockedMargin: sumLocked,
     };
@@ -796,6 +849,7 @@ export default function App() {
     hapticMedium();
     playCashRegister();
     setSlotFlashKey((k) => k + 1);
+    triggerKahvehaneFx("collect", trader.id, amount);
     speakStreetEvent("tefeci", "debt_pressure", amount + bal);
     pushCommand(
       "COLLECT_DEBT",
@@ -984,6 +1038,7 @@ export default function App() {
         addToast("Faiz Katlandı!", `${debt.nickname} artık 2 katı faiz ödeyecek.`, "danger");
       }}
       onSendEnforcer={(debt) => {
+        triggerKahvehaneFx("enforcer", debt.traderId);
         pushCommand(
           "SEND_ENFORCER",
           debt.traderId,
@@ -1000,6 +1055,7 @@ export default function App() {
         setSlotFlashKey((k) => k + 1);
         const amount =
           Math.round(Math.min(debt.traderBalance * 0.5, debt.owedUsdt) * 100) / 100;
+        triggerKahvehaneFx("collect", debt.traderId, amount);
         pushCommand(
           "COLLECT_DEBT",
           debt.traderId,
@@ -1074,12 +1130,45 @@ export default function App() {
       }}
       onSendEnforcer={(debtId, traderId, nickname) => {
         playEnforcerKnock();
+        triggerKahvehaneFx("enforcer", traderId);
         speakAs("tefeci", `Çırağı ${nickname}'in kapısına saldım!`);
         pushCommand(
           "SEND_ENFORCER",
           traderId,
           `Çırak ${nickname}'in kapısına gönderildi!`,
           { trader_id: traderId, ...(debtId ? { debt_id: debtId } : {}) }
+        );
+        addToast("Çırak Yola Çıktı", `${nickname} korku moduna girdi!`, "gold");
+      }}
+      onCollectDebt={(trader, debt) => handleCollectFromTrader(trader, debt)}
+    />
+  );
+
+  const wantedLedgerSection = (
+    <WantedLedgerCards
+      traders={traders}
+      debts={debtRows}
+      openPnlByTrader={openPnlByTrader}
+      onDoubleInterest={(debtId, traderId, nickname) => {
+        setGoldShockwaveKey((k) => k + 1);
+        playClick();
+        pushCommand(
+          "DOUBLE_INTEREST",
+          traderId,
+          `${nickname} senet faizi 2'ye katlandı!`,
+          { debt_id: debtId }
+        );
+        addToast("Faiz Katlandı!", `${nickname} ARANIYOR ödülü 2x faizle katlandı!`, "danger");
+      }}
+      onSendEnforcer={(debtId, traderId, nickname) => {
+        playEnforcerKnock();
+        triggerKahvehaneFx("enforcer", traderId);
+        speakAs("tefeci", `Çırağı ${nickname}'in kapısına saldım!`);
+        pushCommand(
+          "SEND_ENFORCER",
+          traderId,
+          `Çırak ${nickname}'in kapısına gönderildi!`,
+          { trader_id: traderId, debt_id: debtId }
         );
         addToast("Çırak Yola Çıktı", `${nickname} korku moduna girdi!`, "gold");
       }}
@@ -1101,6 +1190,7 @@ export default function App() {
       }}
       onSendEnforcerTo={(tid, nickname) => {
         playEnforcerKnock();
+        triggerKahvehaneFx("enforcer", tid);
         speakAs("tefeci", `Çırağı ${nickname}'in kapısına saldım!`);
         pushCommand("SEND_ENFORCER", tid, `Çırak ${nickname}'in kapısına gönderildi!`, {
           trader_id: tid,
@@ -1112,14 +1202,33 @@ export default function App() {
     />
   );
 
+  const kahvehanePositions = openPositions.map((p) => ({
+    traderId: p.traderId,
+    symbol: p.symbol,
+    side: p.side,
+    leverage: p.leverage,
+    marginUsdt: p.isolatedMargin,
+  }));
+
   return (
     <div
       className={`min-h-screen overflow-x-clip pb-24 text-zinc-100 lg:pb-12 ${
         microShakeActive ? "liq-micro-shake" : ""
-      } ${crimsonOverdriveActive ? "fx-crimson-overdrive" : ""}`}
+      } ${crimsonOverdriveActive ? "fx-crimson-overdrive" : ""} ${
+        cyberGlitchActive ? "fx-cyber-glitch" : ""
+      }`}
     >
       {/* Retro-Arcade CRT Scanline Overlay (Toggleable from Header) */}
       {crtOn && <div aria-hidden="true" className="crt-scanlines-overlay" />}
+
+      {/* Visual Revolution V2: High-Leverage / Whale Cyberpunk Glitch Slice Overlay */}
+      {cyberGlitchKey > 0 && (
+        <div
+          key={`glitch-${cyberGlitchKey}`}
+          aria-hidden="true"
+          className="cyber-glitch-overlay"
+        />
+      )}
 
       {/* Command FX Matrix: FAİZİ KATLA Golden Shockwave */}
       {goldShockwaveKey > 0 && (
@@ -1220,15 +1329,23 @@ export default function App() {
           <>
             {liquidationBanner}
 
-            {/* Faz 1: 2.5D İzometrik Yeraltı Kahvehanesi Canvas (60 FPS + Chip Stacks + Alev) */}
+            {/* Faz 1 + V2: 2.5D İzometrik Yeraltı Kahvehanesi Canvas (Aura + 2.5D Risk Isı + Çırak/Tahsilat Sprite) */}
             <IsometricKahvehaneCanvas
               traders={traders}
-              openPositions={openPositions}
+              openPositions={kahvehanePositions}
               debts={debtRows}
               openPnlByTrader={openPnlByTrader}
               recentLiqTraders={flashingTraderIds}
               livePrices={livePrices}
               tefeciProfit={tefeciProfit}
+              fxEvents={kahvehaneFxEvents}
+            />
+
+            {/* V2 TODO #4.2: Canlı Trader Yarış Pisti (Racetrack Equity Gauge) */}
+            <TraderRacetrackGauge
+              traders={traders}
+              openPnlByTrader={openPnlByTrader}
+              lockedMarginByTrader={lockedMarginByTrader}
             />
 
             {/* Faz 3: TradingView Canlı Mum Grafiği + Trader Pozisyon Katmanı */}
@@ -1239,7 +1356,7 @@ export default function App() {
               binanceConnected={binanceConnected}
             />
 
-            {/* Faz 3 + Faz 2: Tahta Kemal OBI X-Ray & Likidasyon Duvarı Isı Haritası */}
+            {/* V2 TODO #2.1 + Faz 2: Tahta Kemal 3D İzometrik Emir Defteri Duvarı & Likidasyon Duvarı Isı Haritası */}
             <section className="grid gap-4 lg:grid-cols-12">
               <div className="min-w-0 lg:col-span-7">
                 <OrderbookDepthVisualizer fundingSnapshots={fundingSnapshots} />
@@ -1247,6 +1364,23 @@ export default function App() {
               <div className="min-w-0 lg:col-span-5">
                 <LiquidationHeatmap
                   openPositions={openPositions}
+                  livePrices={livePrices}
+                />
+              </div>
+            </section>
+
+            {/* V2 TODO #2.2 + #2.3: Fitilci Mehmet Likidasyon Fitil Radarı & Fonlama Nuri Funding/OI Vektör Matrisi */}
+            <section className="grid gap-4 xl:grid-cols-12">
+              <div className="min-w-0 xl:col-span-6">
+                <LiquidationRadarVisualizer
+                  items={liquidations}
+                  binanceConnected={binanceConnected}
+                  cumulativeUsdt={liqStats.cumulativeUsdt}
+                />
+              </div>
+              <div className="min-w-0 xl:col-span-6">
+                <FundingOIMatrix
+                  fundingSnapshots={fundingSnapshots}
                   livePrices={livePrices}
                 />
               </div>
@@ -1283,8 +1417,9 @@ export default function App() {
             {/* Keep DarkPatternAlerts prominent on Market */}
             {darkPatternDesk}
 
-            {/* Faz 2: Canlı İnteraktif Borç Ağı (Node Graph) */}
+            {/* Faz 2: Canlı İnteraktif Borç Ağı (Node Graph) + V2 ARANIYOR Poster Kartları */}
             {debtNetworkGraphSection}
+            {wantedLedgerSection}
 
             {/* Rıza: Live Debt Endurance Timers */}
             <DebtEndurancePanel
@@ -1345,12 +1480,18 @@ export default function App() {
           <>
             <IsometricKahvehaneCanvas
               traders={traders}
-              openPositions={openPositions}
+              openPositions={kahvehanePositions}
               debts={debtRows}
               openPnlByTrader={openPnlByTrader}
               recentLiqTraders={flashingTraderIds}
               livePrices={livePrices}
               tefeciProfit={tefeciProfit}
+              fxEvents={kahvehaneFxEvents}
+            />
+            <TraderRacetrackGauge
+              traders={traders}
+              openPnlByTrader={openPnlByTrader}
+              lockedMarginByTrader={lockedMarginByTrader}
             />
             <TraderRadarChart
               traders={traders}
@@ -1388,9 +1529,11 @@ export default function App() {
           </>
         )}
 
-        {/* TAB 4: SENETLER (DebtNetworkGraph + LiquidationHeatmap + DarkPatternAlerts + DebtEndurance + BottomSheet DebtLedger) */}
+        {/* TAB 4: SENETLER (Wanted Posters + DebtNetworkGraph + LiquidationHeatmap + DarkPatternAlerts + DebtEndurance + BottomSheet DebtLedger) */}
         {activeTab === "debts" && (
           <>
+            {wantedLedgerSection}
+
             {debtNetworkGraphSection}
 
             <LiquidationHeatmap
